@@ -14,9 +14,7 @@ import argparse
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Default paths
-DEFAULT_WATCH_PATH = r"C:\Users\bjoern\Saved Games\DCS\Liveries\Mi-24P\Clipped Hussars\tmp"
-DEFAULT_OUTPUT_PATH = r"C:\Users\bjoern\Saved Games\DCS\Liveries\Mi-24P\Clipped Hussars"
+# Configuration
 COMPRESSION = "bc7"  # Options: bc1, bc3, bc7, etc.
 NVCOMPRESS_PATH = r"C:\Program Files\NVIDIA Corporation\NVIDIA Texture Tools\nvcompress.exe"
 
@@ -53,12 +51,10 @@ class PNGHandler(FileSystemEventHandler):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Watch for PNG files and convert them to DDS format')
-    parser.add_argument('--watch-path', '-w', 
-                       default=DEFAULT_WATCH_PATH,
-                       help=f'Path to watch for PNG files (default: {DEFAULT_WATCH_PATH})')
-    parser.add_argument('--output-path', '-o',
-                       default=DEFAULT_OUTPUT_PATH,
-                       help=f'Path to save converted DDS files (default: {DEFAULT_OUTPUT_PATH})')
+    parser.add_argument('watch_path',
+                       help='Path to watch for PNG files')
+    parser.add_argument('output_path',
+                       help='Path to save converted DDS files')
     return parser.parse_args()
 
 if __name__ == "__main__":
