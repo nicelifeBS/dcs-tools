@@ -8,19 +8,37 @@ from xml.etree.ElementTree import Element, SubElement, ElementTree
 def uv_distance(p1, p2):
     return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
-def csv_to_svg(csv_path, svg_path, max_dist=0.05, width=1000, height=1000, flip_vertical=False):
+def csv_to_svg(csv_path, svg_path, max_dist=0.05, width=1000, height=1000, flip_vertical=False, wrap_u=False):
     # Load CSV
     df = pd.read_csv(csv_path)
+    
+    # Check for missing u,v columns
+    if "u" not in df.columns or "v" not in df.columns:
+        print(f"Error: CSV must contain 'u' and 'v' columns. Found columns: {list(df.columns)}")
+        return
+    
+    # Handle UV wrapping: map 1.0-2.0e to00 range
+    if wrap_u:
+        df["u"] = df["u"] - 1.0
+    
     df = df[["u", "v"]].dropna().copy()
-
-    # Optional: remove extreme/placeholder values
-    df = df[(df["u"] <= 1.0) & (df["v"] <= 1.0)]
+    
+    # Remove points where u or v are not in [0, 1]
+    df = df[(df["u"] >= 0.0) & (df["u"] <= 1.0) & (df["v"] >= 0.0) & (df["v"] <= 1.0)]
+    
+    # Remove duplicate points
+    df = df.drop_duplicates()
 
     # Convert UV to scaled coordinates (with optional vertical flip)
     if flip_vertical:
         points = [(u * width, (1 - v) * height) for u, v in df[["u", "v"]].values]
     else:
         points = [(u * width, v * height) for u, v in df[["u", "v"]].values]
+
+    # Check if we have any points to process
+    if len(points) == 0:
+        print(f"Warning: No valid data points found in {csv_path}. SVG not created.")
+        return
 
     # Group points into segments based on max distance
     segments = []
@@ -59,6 +77,8 @@ def main():
                        help='SVG height in pixels (default: 1000)')
     parser.add_argument('--flip-vertical', action='store_true',
                        help='Flip the SVG vertically (default: no flip)')
+    parser.add_argument('--wrap-u', action='store_true',
+                       help='Wrap the U coordinate from 1.0-2.0 to 0.0-1.0 (default: no wrap)')
     
     args = parser.parse_args()
     
@@ -67,7 +87,7 @@ def main():
         base_name = os.path.splitext(args.input_csv)[0]
         args.output_svg = base_name + '.svg'
     try:
-        csv_to_svg(args.input_csv, args.output_svg, args.max_dist, args.width, args.height, args.flip_vertical)
+        csv_to_svg(args.input_csv, args.output_svg, args.max_dist, args.width, args.height, args.flip_vertical, args.wrap_u)
     except FileNotFoundError:
         print(f"Error: Input file '{args.input_csv}' not found.")
         sys.exit(1)
