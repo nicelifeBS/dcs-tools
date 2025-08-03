@@ -5,10 +5,149 @@ import sys
 import argparse
 import requests
 import subprocess
+import re
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 server_url = "http://localhost:8880"
+
+
+class AudioLeveler:
+    def __init__(self, ffmpeg_path: str = "ffmpeg"):
+        self.ffmpeg_path = ffmpeg_path
+        self._check_ffmpeg()
+    
+    def _check_ffmpeg(self) -> bool:
+        """Check if FFmpeg is available"""
+        try:
+            result = subprocess.run([self.ffmpeg_path, "-version"], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print(f"✓ FFmpeg found: {result.stdout.split()[2]}")
+                return True
+            else:
+                print(f"✗ FFmpeg check failed: {result.stderr}")
+                return False
+        except FileNotFoundError:
+            print(f"✗ FFmpeg not found at: {self.ffmpeg_path}")
+            print("Please install FFmpeg and ensure it's in your PATH")
+            return False
+        except Exception as e:
+            print(f"✗ Error checking FFmpeg: {e}")
+            return False
+    
+    def analyze_audio_levels(self, file_path: str) -> Optional[Dict]:
+        """Analyze audio levels using volumedetect filter"""
+        try:
+            cmd = [
+                self.ffmpeg_path,
+                "-i", file_path,
+                "-filter:a", "volumedetect",
+                "-map", "0:a",
+                "-f", "null",
+                "-"
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                # Parse the volumedetect output
+                output = result.stderr
+                
+                # Extract values using regex
+                mean_match = re.search(r'mean_volume: ([-\d.]+) dB', output)
+                max_match = re.search(r'max_volume: ([-\d.]+) dB', output)
+                samples_match = re.search(r'n_samples: (\d+)', output)
+                
+                if mean_match and max_match:
+                    return {
+                        'mean_volume': float(mean_match.group(1)),
+                        'max_volume': float(max_match.group(1)),
+                        'n_samples': int(samples_match.group(1)) if samples_match else 0
+                    }
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error analyzing audio levels: {e}")
+            return None
+    
+    def level_audio(self, input_file: str, output_file: str, 
+                   target_peak: float = -2.0, preset: str = "broadcast") -> bool:
+        """Level audio file using volumedetect analysis"""
+        
+        try:
+            # First, analyze the audio to get current levels
+            print("Analyzing audio levels...")
+            analysis = self.analyze_audio_levels(input_file)
+            
+            if not analysis:
+                print("✗ Could not analyze audio levels")
+                return False
+            
+            current_max = analysis['max_volume']
+            current_mean = analysis['mean_volume']
+            
+            print(f"Current levels - Mean: {current_mean:.1f} dB, Max: {current_max:.1f} dB")
+            
+            # Calculate the volume adjustment needed
+            # We want to bring the max volume to target_peak
+            volume_adjustment = target_peak - current_max
+            
+            print(f"Volume adjustment needed: {volume_adjustment:.1f} dB")
+            
+            # Build FFmpeg command with volume filter
+            filters = [f"volume={volume_adjustment:.1f}dB"]
+            
+            # Add preset-specific filters
+            if preset == "broadcast":
+                filters.extend(["highpass=f=20", "lowpass=f=20000"])
+            elif preset == "streaming":
+                filters.extend(["highpass=f=30", "lowpass=f=18000"])
+            elif preset == "gaming":
+                filters.extend(["highpass=f=40", "lowpass=f=16000"])
+            elif preset == "voice":
+                filters.extend(["highpass=f=80", "lowpass=f=8000"])
+            elif preset == "music":
+                filters.extend(["highpass=f=20", "lowpass=f=22000"])
+            elif preset == "radio":
+                filters.extend(["highpass=f=300", "lowpass=f=3000"])
+            
+            filter_chain = ",".join(filters)
+            
+            cmd = [
+                self.ffmpeg_path,
+                "-i", input_file,
+                "-af", filter_chain,
+                "-y",  # Overwrite output file
+                output_file
+            ]
+            
+            print(f"Applying {preset} leveling with volume adjustment...")
+            
+            # Run FFmpeg
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            
+            if result.returncode == 0:
+                print(f"✓ Audio leveled successfully: {Path(output_file).name}")
+                
+                # Analyze the output to verify the result
+                print("Verifying output levels...")
+                output_analysis = self.analyze_audio_levels(output_file)
+                if output_analysis:
+                    print(f"Output levels - Mean: {output_analysis['mean_volume']:.1f} dB, Max: {output_analysis['max_volume']:.1f} dB")
+                
+                return True
+            else:
+                print(f"✗ FFmpeg error: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("✗ FFmpeg process timed out")
+            return False
+        except Exception as e:
+            print(f"✗ Error leveling audio: {e}")
+            return False
 
 
 class RadioEffectProcessor:
@@ -299,7 +438,9 @@ def sanitize_filename(filename: str) -> str:
 
 def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS, 
                      response_format_override: str = None, download_format_override: str = None,
-                     speed_override: float = None, volume_override: float = None) -> None:
+                     speed_override: float = None, volume_override: float = None,
+                     level_audio: bool = True, leveler_format: str = "ogg", 
+                     target_peak: float = -2.0, leveler_preset: str = "broadcast") -> None:
     """Process all entries in the CSV file and generate TTS audio files"""
     
     # Read CSV entries
@@ -317,6 +458,11 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
     
     # Initialize radio effect processor
     radio_processor = RadioEffectProcessor()
+    
+    # Initialize audio leveler if needed
+    audio_leveler = None
+    if level_audio:
+        audio_leveler = AudioLeveler()
     
     # Get available voices for validation
     available_voices = tts_client.get_available_voices()
@@ -382,10 +528,38 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
                         print(f"  ✓ Intermediate file removed")
                     except Exception as e:
                         print(f"  Warning: Could not remove intermediate file: {e}")
+                    
+                    # Apply audio leveling as final step
+                    if audio_leveler:
+                        print(f"  Applying audio leveling...")
+                        leveled_dir = output_path / "leveled"
+                        leveled_dir.mkdir(exist_ok=True)
+                        leveled_file = leveled_dir / f"radio_{safe_title}.{leveler_format}"
+                        
+                        if audio_leveler.level_audio(str(final_radio_file), str(leveled_file), target_peak, leveler_preset):
+                            print(f"  ✓ Audio leveled successfully")
+                        else:
+                            print(f"  ✗ Failed to apply audio leveling")
+                            error_count += 1
+                            continue
                 else:
                     print(f"  ✗ Failed to apply radio effect")
                     error_count += 1
                     continue
+            else:
+                # For non-radio entries, apply audio leveling to the TTS output
+                if audio_leveler:
+                    print(f"  Applying audio leveling...")
+                    leveled_dir = output_path / "leveled"
+                    leveled_dir.mkdir(exist_ok=True)
+                    leveled_file = leveled_dir / f"{type_prefix}_{safe_title}.{leveler_format}"
+                    
+                    if audio_leveler.level_audio(str(output_file), str(leveled_file), target_peak, leveler_preset):
+                        print(f"  ✓ Audio leveled successfully")
+                    else:
+                        print(f"  ✗ Failed to apply audio leveling")
+                        error_count += 1
+                        continue
             
             success_count += 1
         else:
@@ -412,6 +586,13 @@ def main():
                        help="Override download format for all entries")
     parser.add_argument("--speed", type=float, help="Override speed for all entries (0.25 to 4.0)")
     parser.add_argument("--volume", type=float, help="Override volume multiplier for all entries")
+    parser.add_argument("--no-leveling", action="store_true", help="Skip audio leveling step")
+    parser.add_argument("--leveler-format", choices=["ogg", "wav", "mp3", "flac"], default="ogg",
+                       help="Output format for leveled audio (default: ogg)")
+    parser.add_argument("--target-peak", type=float, default=-2.0,
+                       help="Target peak in dB for audio leveling (default: -2.0)")
+    parser.add_argument("--leveler-preset", choices=["broadcast", "streaming", "gaming", "voice", "music", "radio"],
+                       default="broadcast", help="Audio leveling preset (default: broadcast)")
     
     args = parser.parse_args()
     
@@ -448,7 +629,11 @@ def main():
                      response_format_override=args.response_format,
                      download_format_override=args.download_format,
                      speed_override=args.speed,
-                     volume_override=args.volume)
+                     volume_override=args.volume,
+                     level_audio=not args.no_leveling,
+                     leveler_format=args.leveler_format,
+                     target_peak=args.target_peak,
+                     leveler_preset=args.leveler_preset)
 
 
 if __name__ == "__main__":
