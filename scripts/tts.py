@@ -188,7 +188,7 @@ class KokoroTTS:
     
     def generate_speech(self, text: str, voice: str, output_path: str, 
                        response_format: str = "wav", speed: float = 1.0, 
-                       volume_multiplier: float = 1.0, download_format: str = "mp3") -> bool:
+                       volume_multiplier: float = 3.0, download_format: str = "mp3") -> bool:
         """Generate speech from text using specified voice and save to output path"""
         try:
             # Prepare the TTS request according to Kokoro API format
