@@ -1,15 +1,135 @@
 """Tool to convert text to speech using Kokoro local running server"""
 
 import csv
-import os
 import sys
 import argparse
 import requests
-import json
+import subprocess
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 server_url = "http://localhost:8880"
+
+
+class RadioEffectProcessor:
+    def __init__(self, ffmpeg_path: str = "ffmpeg"):
+        self.ffmpeg_path = ffmpeg_path
+        self._check_ffmpeg()
+    
+    def _check_ffmpeg(self) -> bool:
+        """Check if FFmpeg is available"""
+        try:
+            result = subprocess.run([self.ffmpeg_path, "-version"], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print(f"✓ FFmpeg found: {result.stdout.split()[2]}")
+                return True
+            else:
+                print(f"✗ FFmpeg check failed: {result.stderr}")
+                return False
+        except FileNotFoundError:
+            print(f"✗ FFmpeg not found at: {self.ffmpeg_path}")
+            print("Please install FFmpeg and ensure it's in your PATH")
+            return False
+        except Exception as e:
+            print(f"✗ Error checking FFmpeg: {e}")
+            return False
+    
+    def apply_radio_effect(self, input_file: str, output_file: str) -> bool:
+        """Apply radio transmission effect to audio file using default settings"""
+        
+        # Use standard effect with medium quality (defaults)
+        filters = self._get_radio_filters("standard", "medium")
+        
+        try:
+            # Build FFmpeg command
+            cmd = [
+                self.ffmpeg_path,
+                "-i", input_file,
+                "-af", filters,
+                "-y",  # Overwrite output file
+                output_file
+            ]
+            
+            print(f"Applying radio effect...")
+            
+            # Run FFmpeg
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0:
+                print(f"✓ Radio effect applied successfully")
+                return True
+            else:
+                print(f"✗ FFmpeg error: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("✗ FFmpeg process timed out")
+            return False
+        except Exception as e:
+            print(f"✗ Error applying radio effect: {e}")
+            return False
+    
+    def _get_radio_filters(self, effect_type: str, quality: str) -> str:
+        """Get FFmpeg filter chain for radio effects"""
+        
+        # Base filters for radio transmission simulation
+        base_filters = [
+            # High-pass filter to remove low frequencies (like radio)
+            "highpass=f=300",
+            # Low-pass filter to limit high frequencies
+            "lowpass=f=3000",
+            # Compression to simulate radio compression
+            "acompressor=threshold=0.1:ratio=4:attack=0.1:release=0.1"
+        ]
+        
+        # Quality-specific adjustments
+        if quality == "low":
+            # More aggressive filtering for low quality
+            base_filters.extend([
+                "highpass=f=500",
+                "lowpass=f=2500"
+            ])
+        elif quality == "high":
+            # Less aggressive for high quality
+            base_filters.extend([
+                "highpass=f=200",
+                "lowpass=f=3500"
+            ])
+        
+        # Effect-specific modifications
+        if effect_type == "military":
+            # Military radio effect - more formal, clear
+            filters = [
+                "highpass=f=400",
+                "lowpass=f=2800",
+                "acompressor=threshold=0.05:ratio=6:attack=0.05:release=0.1"
+            ]
+        elif effect_type == "amateur":
+            # Amateur radio effect - more variable quality
+            filters = [
+                "highpass=f=250",
+                "lowpass=f=3200",
+                "acompressor=threshold=0.15:ratio=3:attack=0.2:release=0.3"
+            ]
+        elif effect_type == "emergency":
+            # Emergency radio effect - clear and loud
+            filters = [
+                "highpass=f=350",
+                "lowpass=f=3000",
+                "acompressor=threshold=0.02:ratio=8:attack=0.02:release=0.05"
+            ]
+        elif effect_type == "vintage":
+            # Vintage radio effect - old equipment simulation
+            filters = [
+                "highpass=f=200",
+                "lowpass=f=2500",
+                "acompressor=threshold=0.2:ratio=2:attack=0.3:release=0.5"
+            ]
+        else:  # standard
+            filters = base_filters
+        
+        return ",".join(filters)
 
 
 class KokoroTTS:
@@ -113,10 +233,10 @@ def read_csv_file(csv_path: str) -> List[Dict[str, str]]:
     
     try:
         with open(csv_path, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file, delimiter=',')
+            reader = csv.DictReader(file, delimiter=';')
             
             # Validate required columns
-            required_columns = ['title', 'text', 'voice']
+            required_columns = ['title', 'text', 'voice', 'type']
             if not all(col in reader.fieldnames for col in required_columns):
                 print(f"Error: CSV must contain columns: {', '.join(required_columns)}")
                 print(f"Found columns: {', '.join(reader.fieldnames or [])}")
@@ -127,8 +247,9 @@ def read_csv_file(csv_path: str) -> List[Dict[str, str]]:
                 title = row['title'].strip()
                 text = row['text'].strip()
                 voice = row['voice'].strip()
+                type_value = row['type'].strip()
                 
-                if not title or not text or not voice:
+                if not title or not text or not voice or not type_value:
                     print(f"Warning: Skipping row {row_num} - missing required data")
                     continue
                 
@@ -142,6 +263,7 @@ def read_csv_file(csv_path: str) -> List[Dict[str, str]]:
                     'title': title,
                     'text': text,
                     'voice': voice,
+                    'type': type_value,
                     'format': response_format,
                     'download_format': download_format,
                     'speed': speed,
@@ -193,6 +315,9 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
     print(f"Processing {len(entries)} entries...")
     print(f"Output directory: {output_path.absolute()}")
     
+    # Initialize radio effect processor
+    radio_processor = RadioEffectProcessor()
+    
     # Get available voices for validation
     available_voices = tts_client.get_available_voices()
     if available_voices:
@@ -203,6 +328,7 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
     
     for i, entry in enumerate(entries, 1):
         print(f"\n[{i}/{len(entries)}] Processing: {entry['title']}")
+        print(f"  Type: {entry['type']}")
         print(f"  Text: {entry['text'][:50]}{'...' if len(entry['text']) > 50 else ''}")
         print(f"  Voice: {entry['voice']}")
         
@@ -216,9 +342,15 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
         if response_format_override or download_format_override or speed_override is not None or volume_override is not None:
             print(f"  Parameters: format={response_format}, download={download_format}, speed={speed}, volume={volume}")
         
-        # Sanitize filename
+        # Sanitize filename with type prefix
         safe_title = sanitize_filename(entry['title'])
-        output_file = output_path / f"{safe_title}.{response_format}"
+        type_prefix = sanitize_filename(entry['type'])
+        
+        # For radio type, use a different filename for TTS output to avoid conflicts
+        if entry['type'].lower() == 'radio':
+            output_file = output_path / f"temp_{safe_title}.{response_format}"
+        else:
+            output_file = output_path / f"{type_prefix}_{safe_title}.{response_format}"
         
         # Check if file already exists
         if output_file.exists():
@@ -235,6 +367,26 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
             download_format=download_format
         ):
             print(f"  ✓ Generated: {output_file.name}")
+            
+            # Apply radio effect if type is "radio"
+            if entry['type'].lower() == 'radio':
+                print(f"  Applying radio effect...")
+                # Create the final radio file directly
+                final_radio_file = output_path / f"radio_{safe_title}.{response_format}"
+                
+                if radio_processor.apply_radio_effect(str(output_file), str(final_radio_file)):
+                    print(f"  ✓ Radio effect applied successfully")
+                    # Remove the intermediate file (original TTS output)
+                    try:
+                        output_file.unlink()
+                        print(f"  ✓ Intermediate file removed")
+                    except Exception as e:
+                        print(f"  Warning: Could not remove intermediate file: {e}")
+                else:
+                    print(f"  ✗ Failed to apply radio effect")
+                    error_count += 1
+                    continue
+            
             success_count += 1
         else:
             print(f"  ✗ Failed to generate: {output_file.name}")

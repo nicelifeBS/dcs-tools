@@ -1,0 +1,4 @@
+title;text;voice;type;format;download_format;speed;volume
+welcome_message;Welcome to our application! We're glad you're here.;af_heart;briefing;wav;mp3;1.0;1.0
+error_notification;An error has occurred. Please try again or contact support.;af_heart;briefing;mp3;mp3;0.9;1.2
+success_message;Operation completed successfully. Your changes have been saved.;af_heart;radio;wav;mp3;1.1;1.0
