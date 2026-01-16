@@ -12,29 +12,50 @@ from typing import List, Dict, Optional
 server_url = "http://localhost:8880"
 
 
-class AudioLeveler:
+def check_ffmpeg(ffmpeg_path: str = "ffmpeg") -> bool:
+    """Check if FFmpeg is available and provide installation guidance"""
+    try:
+        result = subprocess.run([ffmpeg_path, "-version"], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            print(f"✓ FFmpeg found: {result.stdout.split()[2]}")
+            return True
+        else:
+            print(f"✗ FFmpeg check failed: {result.stderr}")
+            return False
+    except FileNotFoundError:
+        print(f"✗ FFmpeg not found at: {ffmpeg_path}")
+        print("\n📋 FFmpeg Installation Guide:")
+        print("=" * 50)
+        print("Windows:")
+        print("  1. Download from: https://ffmpeg.org/download.html")
+        print("  2. Extract to C:\\ffmpeg\\")
+        print("  3. Add C:\\ffmpeg\\bin to your PATH environment variable")
+        print("  4. Or use: winget install ffmpeg")
+        print()
+        print("macOS:")
+        print("  1. Install via Homebrew: brew install ffmpeg")
+        print("  2. Or download from: https://ffmpeg.org/download.html")
+        print()
+        print("Linux (Ubuntu/Debian):")
+        print("  1. sudo apt update && sudo apt install ffmpeg")
+        print()
+        print("Linux (CentOS/RHEL):")
+        print("  1. sudo yum install ffmpeg")
+        print()
+        print("After installation, restart your terminal and try again.")
+        return False
+    except Exception as e:
+        print(f"✗ Error checking FFmpeg: {e}")
+        return False
+
+
+
+
+
+class AudioProcessor:
     def __init__(self, ffmpeg_path: str = "ffmpeg"):
         self.ffmpeg_path = ffmpeg_path
-        self._check_ffmpeg()
-    
-    def _check_ffmpeg(self) -> bool:
-        """Check if FFmpeg is available"""
-        try:
-            result = subprocess.run([self.ffmpeg_path, "-version"], 
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                print(f"✓ FFmpeg found: {result.stdout.split()[2]}")
-                return True
-            else:
-                print(f"✗ FFmpeg check failed: {result.stderr}")
-                return False
-        except FileNotFoundError:
-            print(f"✗ FFmpeg not found at: {self.ffmpeg_path}")
-            print("Please install FFmpeg and ensure it's in your PATH")
-            return False
-        except Exception as e:
-            print(f"✗ Error checking FFmpeg: {e}")
-            return False
     
     def analyze_audio_levels(self, file_path: str) -> Optional[Dict]:
         """Analyze audio levels using volumedetect filter"""
@@ -72,12 +93,14 @@ class AudioLeveler:
             print(f"Error analyzing audio levels: {e}")
             return None
     
-    def level_audio(self, input_file: str, output_file: str, 
-                   target_peak: float = -2.0, preset: str = "broadcast") -> bool:
-        """Level audio file using volumedetect analysis"""
+    def process_audio(self, input_file: str, output_file: str, 
+                     target_peak: float = -2.0, leveler_preset: str = "broadcast",
+                     apply_radio_effect: bool = False, radio_effect_type: str = "standard",
+                     radio_quality: str = "medium") -> bool:
+        """Process audio with leveling and optionally radio effect in a single FFmpeg operation"""
         
         try:
-            # First, analyze the audio to get current levels
+            # First, analyze the audio to get current levels for leveling
             print("Analyzing audio levels...")
             analysis = self.analyze_audio_levels(input_file)
             
@@ -91,30 +114,40 @@ class AudioLeveler:
             print(f"Current levels - Mean: {current_mean:.1f} dB, Max: {current_max:.1f} dB")
             
             # Calculate the volume adjustment needed
-            # We want to bring the max volume to target_peak
             volume_adjustment = target_peak - current_max
             
             print(f"Volume adjustment needed: {volume_adjustment:.1f} dB")
             
-            # Build FFmpeg command with volume filter
-            filters = [f"volume={volume_adjustment:.1f}dB"]
+            # Build combined filter chain
+            filters = []
             
-            # Add preset-specific filters
-            if preset == "broadcast":
+            # 1. Volume adjustment (leveling)
+            filters.append(f"volume={volume_adjustment:.1f}dB")
+            
+            # 2. Preset-specific filters (leveling)
+            if leveler_preset == "broadcast":
                 filters.extend(["highpass=f=20", "lowpass=f=20000"])
-            elif preset == "streaming":
+            elif leveler_preset == "streaming":
                 filters.extend(["highpass=f=30", "lowpass=f=18000"])
-            elif preset == "gaming":
+            elif leveler_preset == "gaming":
                 filters.extend(["highpass=f=40", "lowpass=f=16000"])
-            elif preset == "voice":
+            elif leveler_preset == "voice":
                 filters.extend(["highpass=f=80", "lowpass=f=8000"])
-            elif preset == "music":
+            elif leveler_preset == "music":
                 filters.extend(["highpass=f=20", "lowpass=f=22000"])
-            elif preset == "radio":
+            elif leveler_preset == "radio":
                 filters.extend(["highpass=f=300", "lowpass=f=3000"])
+            
+            # 3. Radio effect filters (if requested)
+            if apply_radio_effect:
+                radio_filters = self._get_radio_filters(radio_effect_type, radio_quality)
+                filters.extend(radio_filters)
+                # Add volume boost after radio effect to compensate for compression
+                filters.append("volume=+10dB")
             
             filter_chain = ",".join(filters)
             
+            # Build FFmpeg command
             cmd = [
                 self.ffmpeg_path,
                 "-i", input_file,
@@ -123,13 +156,20 @@ class AudioLeveler:
                 output_file
             ]
             
-            print(f"Applying {preset} leveling with volume adjustment...")
+            # Determine what we're doing
+            if apply_radio_effect:
+                print(f"Applying {leveler_preset} leveling + radio effect in single operation...")
+            else:
+                print(f"Applying {leveler_preset} leveling...")
             
             # Run FFmpeg
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             
             if result.returncode == 0:
-                print(f"✓ Audio leveled successfully: {Path(output_file).name}")
+                if apply_radio_effect:
+                    print(f"✓ Audio leveled and radio effect applied successfully: {Path(output_file).name}")
+                else:
+                    print(f"✓ Audio leveled successfully: {Path(output_file).name}")
                 
                 # Analyze the output to verify the result
                 print("Verifying output levels...")
@@ -146,70 +186,10 @@ class AudioLeveler:
             print("✗ FFmpeg process timed out")
             return False
         except Exception as e:
-            print(f"✗ Error leveling audio: {e}")
-            return False
-
-
-class RadioEffectProcessor:
-    def __init__(self, ffmpeg_path: str = "ffmpeg"):
-        self.ffmpeg_path = ffmpeg_path
-        self._check_ffmpeg()
-    
-    def _check_ffmpeg(self) -> bool:
-        """Check if FFmpeg is available"""
-        try:
-            result = subprocess.run([self.ffmpeg_path, "-version"], 
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                print(f"✓ FFmpeg found: {result.stdout.split()[2]}")
-                return True
-            else:
-                print(f"✗ FFmpeg check failed: {result.stderr}")
-                return False
-        except FileNotFoundError:
-            print(f"✗ FFmpeg not found at: {self.ffmpeg_path}")
-            print("Please install FFmpeg and ensure it's in your PATH")
-            return False
-        except Exception as e:
-            print(f"✗ Error checking FFmpeg: {e}")
+            print(f"✗ Error processing audio: {e}")
             return False
     
-    def apply_radio_effect(self, input_file: str, output_file: str) -> bool:
-        """Apply radio transmission effect to audio file using default settings"""
-        
-        # Use standard effect with medium quality (defaults)
-        filters = self._get_radio_filters("standard", "medium")
-        
-        try:
-            # Build FFmpeg command
-            cmd = [
-                self.ffmpeg_path,
-                "-i", input_file,
-                "-af", filters,
-                "-y",  # Overwrite output file
-                output_file
-            ]
-            
-            print(f"Applying radio effect...")
-            
-            # Run FFmpeg
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0:
-                print(f"✓ Radio effect applied successfully")
-                return True
-            else:
-                print(f"✗ FFmpeg error: {result.stderr}")
-                return False
-                
-        except subprocess.TimeoutExpired:
-            print("✗ FFmpeg process timed out")
-            return False
-        except Exception as e:
-            print(f"✗ Error applying radio effect: {e}")
-            return False
-    
-    def _get_radio_filters(self, effect_type: str, quality: str) -> str:
+    def _get_radio_filters(self, effect_type: str, quality: str) -> List[str]:
         """Get FFmpeg filter chain for radio effects"""
         
         # Base filters for radio transmission simulation
@@ -218,8 +198,8 @@ class RadioEffectProcessor:
             "highpass=f=300",
             # Low-pass filter to limit high frequencies
             "lowpass=f=3000",
-            # Compression to simulate radio compression
-            "acompressor=threshold=0.1:ratio=4:attack=0.1:release=0.1"
+            # Compression to simulate radio compression (less aggressive)
+            "acompressor=threshold=0.05:ratio=2:attack=0.1:release=0.1"
         ]
         
         # Quality-specific adjustments
@@ -268,7 +248,7 @@ class RadioEffectProcessor:
         else:  # standard
             filters = base_filters
         
-        return ",".join(filters)
+        return filters
 
 
 class KokoroTTS:
@@ -372,7 +352,7 @@ def read_csv_file(csv_path: str) -> List[Dict[str, str]]:
     
     try:
         with open(csv_path, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file, delimiter=';')
+            reader = csv.DictReader(file, delimiter=',')
             
             # Validate required columns
             required_columns = ['title', 'text', 'voice', 'type']
@@ -397,6 +377,7 @@ def read_csv_file(csv_path: str) -> List[Dict[str, str]]:
                 download_format = row.get('download_format', 'mp3').strip()
                 speed = float(row.get('speed', '1.0').strip())
                 volume_multiplier = float(row.get('volume', '1.0').strip())
+                output_format = row.get('output_format', '').strip().lower()  # Will default to ogg in processing if empty
                 
                 entries.append({
                     'title': title,
@@ -406,7 +387,8 @@ def read_csv_file(csv_path: str) -> List[Dict[str, str]]:
                     'format': response_format,
                     'download_format': download_format,
                     'speed': speed,
-                    'volume': volume_multiplier
+                    'volume': volume_multiplier,
+                    'output_format': output_format
                 })
         
         return entries
@@ -436,12 +418,69 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
+def parse_row_indices(row_spec: str) -> Optional[set]:
+    """Parse row specification string into a set of 1-based row indices.
+    
+    Supports:
+    - Individual numbers: "1,3,5"
+    - Ranges: "1-5" or "1:5"
+    - Mixed: "1,3,5-8,10"
+    
+    Returns None if invalid, or a set of 1-based indices.
+    """
+    if not row_spec or not row_spec.strip():
+        return None
+    
+    indices = set()
+    parts = row_spec.replace(':', '-').split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        
+        # Check for range
+        if '-' in part:
+            try:
+                start, end = part.split('-', 1)
+                start_idx = int(start.strip())
+                end_idx = int(end.strip())
+                if start_idx < 1 or end_idx < 1:
+                    print(f"Warning: Row indices must be >= 1, ignoring: {part}")
+                    continue
+                if start_idx > end_idx:
+                    print(f"Warning: Invalid range (start > end), ignoring: {part}")
+                    continue
+                indices.update(range(start_idx, end_idx + 1))
+            except ValueError:
+                print(f"Warning: Invalid range format, ignoring: {part}")
+                continue
+        else:
+            # Single number
+            try:
+                idx = int(part)
+                if idx < 1:
+                    print(f"Warning: Row indices must be >= 1, ignoring: {idx}")
+                    continue
+                indices.add(idx)
+            except ValueError:
+                print(f"Warning: Invalid row number, ignoring: {part}")
+                continue
+    
+    return indices if indices else None
+
+
 def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS, 
-                     response_format_override: str = None, download_format_override: str = None,
-                     speed_override: float = None, volume_override: float = None,
-                     level_audio: bool = True, leveler_format: str = "ogg", 
-                     target_peak: float = -2.0, leveler_preset: str = "broadcast") -> None:
-    """Process all entries in the CSV file and generate TTS audio files"""
+                      download_format_override: str = None,
+                      speed_override: float = None, volume_override: float = None,
+                      level_audio: bool = False, output_format: Optional[str] = None, 
+                      target_peak: float = -2.0, leveler_preset: str = "broadcast",
+                      retain_original: bool = False, row_indices: Optional[set] = None) -> None:
+    """Process all entries in the CSV file and generate TTS audio files
+    
+    Args:
+        row_indices: Optional set of 1-based row indices to process. If None, all rows are processed.
+    """
     
     # Read CSV entries
     entries = read_csv_file(csv_path)
@@ -449,20 +488,33 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
         print("No valid entries found in CSV file.")
         return
     
+    # Filter entries by row indices if specified
+    if row_indices is not None:
+        original_count = len(entries)
+        entries = [entry for idx, entry in enumerate(entries, start=1) if idx in row_indices]
+        filtered_count = len(entries)
+        if filtered_count == 0:
+            print(f"No entries match the specified row indices. Total entries in CSV: {original_count}")
+            return
+        print(f"Filtered to {filtered_count} of {original_count} entries based on row indices")
+        # Check for invalid indices
+        max_valid = original_count
+        invalid_indices = [idx for idx in row_indices if idx > max_valid]
+        if invalid_indices:
+            print(f"Warning: Some specified row indices exceed the CSV row count ({max_valid}): {sorted(invalid_indices)}")
+    
     # Create output directory if it doesn't exist
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    leveled_dir = output_path
+    leveled_dir.mkdir(exist_ok=True)
     
     print(f"Processing {len(entries)} entries...")
     print(f"Output directory: {output_path.absolute()}")
-    
-    # Initialize radio effect processor
-    radio_processor = RadioEffectProcessor()
-    
-    # Initialize audio leveler if needed
-    audio_leveler = None
-    if level_audio:
-        audio_leveler = AudioLeveler()
+
+    # Initialize audio processor
+    audio_processor = AudioProcessor()
     
     # Get available voices for validation
     available_voices = tts_client.get_available_voices()
@@ -479,24 +531,38 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
         print(f"  Voice: {entry['voice']}")
         
         # Apply command line overrides
-        response_format = response_format_override if response_format_override else entry['format']
         download_format = download_format_override if download_format_override else entry['download_format']
         speed = speed_override if speed_override is not None else entry['speed']
         volume = volume_override if volume_override is not None else entry['volume']
         
+        # Determine output format: command line override takes precedence, then CSV entry, default to "ogg"
+        if output_format is not None:
+            # Command line override: force this format for all entries
+            final_output_format = output_format
+        else:
+            # Use CSV entry value if valid, otherwise default to "ogg"
+            entry_output_format = entry.get('output_format', '')
+            if entry_output_format and entry_output_format in ['wav', 'ogg']:
+                final_output_format = entry_output_format
+            else:
+                final_output_format = "ogg"  # Default fallback
+        
         # Print overridden parameters if any
-        if response_format_override or download_format_override or speed_override is not None or volume_override is not None:
-            print(f"  Parameters: format={response_format}, download={download_format}, speed={speed}, volume={volume}")
+        if download_format_override or speed_override is not None or volume_override is not None or output_format is not None:
+            print(f"  Parameters: download={download_format}, speed={speed}, volume={volume}, output_format={final_output_format}")
         
         # Sanitize filename with type prefix
         safe_title = sanitize_filename(entry['title'])
         type_prefix = sanitize_filename(entry['type'])
         
-        # For radio type, use a different filename for TTS output to avoid conflicts
-        if entry['type'].lower() == 'radio':
-            output_file = output_path / f"temp_{safe_title}.{response_format}"
+        # Create generated directory only if we need to retain original files
+        if retain_original:
+            generated_dir = output_path / "generated"
+            generated_dir.mkdir(exist_ok=True)
+            output_file = generated_dir / f"temp_{safe_title}.wav"
         else:
-            output_file = output_path / f"{type_prefix}_{safe_title}.{response_format}"
+            # Use a temporary file in the main directory
+            output_file = leveled_dir / f"temp_{safe_title}.wav"
         
         # Check if file already exists
         if output_file.exists():
@@ -507,59 +573,66 @@ def process_tts_batch(csv_path: str, output_dir: str, tts_client: KokoroTTS,
             entry['text'], 
             entry['voice'], 
             str(output_file),
-            response_format=response_format,
+            response_format="wav",
             speed=speed,
             volume_multiplier=volume,
             download_format=download_format
         ):
-            print(f"  ✓ Generated: {output_file.name}")
+            print(f"  ✓ Generated: {output_file}")
             
-            # Apply radio effect if type is "radio"
-            if entry['type'].lower() == 'radio':
-                print(f"  Applying radio effect...")
-                # Create the final radio file directly
-                final_radio_file = output_path / f"radio_{safe_title}.{response_format}"
+            # Always process audio to convert to output format, but skip leveling if --no-leveling is used
+            if level_audio or entry['type'].lower() == 'radio':
+                # Determine output file and processing options
+                final_file = leveled_dir / f"{type_prefix}_{safe_title}.{final_output_format}"
+                apply_radio_effect = entry['type'].lower() == 'radio'
                 
-                if radio_processor.apply_radio_effect(str(output_file), str(final_radio_file)):
-                    print(f"  ✓ Radio effect applied successfully")
-                    # Remove the intermediate file (original TTS output)
-                    try:
-                        output_file.unlink()
-                        print(f"  ✓ Intermediate file removed")
-                    except Exception as e:
-                        print(f"  Warning: Could not remove intermediate file: {e}")
-                    
-                    # Apply audio leveling as final step
-                    if audio_leveler:
-                        print(f"  Applying audio leveling...")
-                        leveled_dir = output_path / "leveled"
-                        leveled_dir.mkdir(exist_ok=True)
-                        leveled_file = leveled_dir / f"radio_{safe_title}.{leveler_format}"
-                        
-                        if audio_leveler.level_audio(str(final_radio_file), str(leveled_file), target_peak, leveler_preset):
-                            print(f"  ✓ Audio leveled successfully")
-                        else:
-                            print(f"  ✗ Failed to apply audio leveling")
-                            error_count += 1
-                            continue
+                # Process audio with combined filters
+                if audio_processor.process_audio(
+                    str(output_file), 
+                    str(final_file),
+                    target_peak=target_peak,
+                    leveler_preset=leveler_preset,
+                    apply_radio_effect=apply_radio_effect
+                ):
+                    print(f"  ✓ Audio processing completed successfully")
                 else:
-                    print(f"  ✗ Failed to apply radio effect")
+                    print(f"  ✗ Failed to process audio")
                     error_count += 1
                     continue
-            else:
-                # For non-radio entries, apply audio leveling to the TTS output
-                if audio_leveler:
-                    print(f"  Applying audio leveling...")
-                    leveled_dir = output_path / "leveled"
-                    leveled_dir.mkdir(exist_ok=True)
-                    leveled_file = leveled_dir / f"{type_prefix}_{safe_title}.{leveler_format}"
-                    
-                    if audio_leveler.level_audio(str(output_file), str(leveled_file), target_peak, leveler_preset):
-                        print(f"  ✓ Audio leveled successfully")
+            elif not level_audio and entry['type'].lower() != 'radio':
+                # When --no-leveling is used and it's not a radio entry, just convert format
+                final_file = leveled_dir / f"{type_prefix}_{safe_title}.{final_output_format}"
+                
+                # Simple format conversion without leveling
+                cmd = [
+                    "ffmpeg",
+                    "-i", str(output_file),
+                    "-y",  # Overwrite output file
+                    str(final_file)
+                ]
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    if result.returncode == 0:
+                        print(f"  ✓ Format conversion completed successfully")
                     else:
-                        print(f"  ✗ Failed to apply audio leveling")
+                        print(f"  ✗ Failed to convert format: {result.stderr}")
                         error_count += 1
                         continue
+                except Exception as e:
+                    print(f"  ✗ Error converting format: {e}")
+                    error_count += 1
+                    continue
+            
+            # Remove the original TTS output file unless retain_original is True
+            if not retain_original:
+                try:
+                    output_file.unlink()
+                    print(f"  ✓ Original TTS file removed")
+                except Exception as e:
+                    print(f"  Warning: Could not remove original TTS file: {e}")
+            else:
+                print(f"  ✓ Original TTS file retained: {output_file.name}")
             
             success_count += 1
         else:
@@ -580,32 +653,63 @@ def main():
                        help="Kokoro TTS server URL (default: http://localhost:8880)")
     parser.add_argument("--check-voices", action="store_true", 
                        help="List available voices and exit")
-    parser.add_argument("--response-format", choices=["mp3", "wav", "opus", "flac", "pcm"],
-                       help="Override response format for all entries")
     parser.add_argument("--download-format", choices=["mp3", "wav", "opus", "flac", "pcm"],
                        help="Override download format for all entries")
     parser.add_argument("--speed", type=float, help="Override speed for all entries (0.25 to 4.0)")
     parser.add_argument("--volume", type=float, help="Override volume multiplier for all entries")
-    parser.add_argument("--no-leveling", action="store_true", help="Skip audio leveling step")
-    parser.add_argument("--leveler-format", choices=["ogg", "wav", "mp3", "flac"], default="ogg",
-                       help="Output format for leveled audio (default: ogg)")
+    parser.add_argument("--leveling", action="store_true", help="Enable audio leveling step (disabled by default)")
+    parser.add_argument("--retain-original", action="store_true", help="Keep original TTS files (not just processed versions)")
+    parser.add_argument("--output-format", choices=["ogg", "wav", "mp3", "flac"], default=None,
+                       help="Override output format for all entries, overriding CSV values (default: use CSV or 'ogg')")
     parser.add_argument("--target-peak", type=float, default=-2.0,
                        help="Target peak in dB for audio leveling (default: -2.0)")
     parser.add_argument("--leveler-preset", choices=["broadcast", "streaming", "gaming", "voice", "music", "radio"],
                        default="broadcast", help="Audio leveling preset (default: broadcast)")
+    parser.add_argument("--rows", type=str, metavar="SPEC",
+                       help="Process only specific rows. Examples: '1,3,5' or '1-5' or '1,3,5-8,10'. Row numbers are 1-based.")
     
     args = parser.parse_args()
+    
+    # Collect all validation issues before exiting
+    issues = []
+    
+    # Check FFmpeg availability (skip if just checking voices)
+    if not args.check_voices:
+        if not check_ffmpeg():
+            issues.append("FFmpeg is required for audio processing features. Please install FFmpeg and try again.")
     
     # Initialize TTS client
     tts_client = KokoroTTS(args.server_url)
     
     # Check server status
     if not tts_client.check_server_status():
-        print(f"Error: Cannot connect to TTS server at {args.server_url}")
-        print("Please ensure the Kokoro TTS server is running.")
+        issues.append(f"Cannot connect to TTS server at {args.server_url}. Please ensure the Kokoro TTS server is running.")
+    
+    # Validate required arguments for processing (only if not checking voices)
+    if not args.check_voices and (not args.csv_file or not args.output_dir):
+        issues.append("Both csv_file and output_dir are required when not using --check-voices")
+    
+    # Check CSV file existence (only if not checking voices and CSV file is provided)
+    if not args.check_voices and args.csv_file and not Path(args.csv_file).exists():
+        issues.append(f"CSV file not found: {args.csv_file}")
+    
+    # Report all issues at once
+    if issues:
+        print("\n❌ Validation Issues Found:")
+        print("=" * 50)
+        for i, issue in enumerate(issues, 1):
+            print(f"{i}. {issue}")
+        print("\nPlease fix the above issues and try again.")
+        if not args.check_voices and (not args.csv_file or not args.output_dir):
+            parser.print_help()
         sys.exit(1)
     
-    print(f"✓ Connected to TTS server: {args.server_url}")
+    # If we get here, all checks passed
+    if not args.check_voices:
+        print(f"✓ FFmpeg found and available")
+        print(f"✓ Connected to TTS server: {args.server_url}")
+    else:
+        print(f"✓ Connected to TTS server: {args.server_url}")
     
     # If just checking voices, do that and exit
     if args.check_voices:
@@ -618,22 +722,27 @@ def main():
             print("No voices found or error retrieving voices.")
         return
     
-    # Validate required arguments for processing
-    if not args.csv_file or not args.output_dir:
-        print("Error: Both csv_file and output_dir are required when not using --check-voices")
-        parser.print_help()
-        sys.exit(1)
+    # Parse row indices if specified
+    row_indices = None
+    if args.rows:
+        row_indices = parse_row_indices(args.rows)
+        if row_indices is None:
+            print(f"Error: Invalid row specification: {args.rows}")
+            print("Examples: '1,3,5' or '1-5' or '1,3,5-8,10'")
+            sys.exit(1)
+        print(f"Processing rows: {sorted(row_indices)}")
     
     # Process the CSV file
     process_tts_batch(args.csv_file, args.output_dir, tts_client,
-                     response_format_override=args.response_format,
-                     download_format_override=args.download_format,
-                     speed_override=args.speed,
-                     volume_override=args.volume,
-                     level_audio=not args.no_leveling,
-                     leveler_format=args.leveler_format,
-                     target_peak=args.target_peak,
-                     leveler_preset=args.leveler_preset)
+                      download_format_override=args.download_format,
+                      speed_override=args.speed,
+                      volume_override=args.volume,
+                      level_audio=args.leveling,
+                      output_format=args.output_format,
+                      target_peak=args.target_peak,
+                      leveler_preset=args.leveler_preset,
+                      retain_original=args.retain_original,
+                      row_indices=row_indices)
 
 
 if __name__ == "__main__":

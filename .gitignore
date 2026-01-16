@@ -10,3 +10,11 @@ wheels/
 .venv
 
 .cursor
+
+api/src/models
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+normalized/
+tests/test_run_output/
