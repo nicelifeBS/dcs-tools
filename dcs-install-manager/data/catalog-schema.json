@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DCS Install Manager catalog",
+  "description": "Documentation-only schema for %APPDATA%/DCSInstallManager/catalog.json. Not enforced at runtime in v1.",
+  "type": "object",
+  "required": ["schemaVersion", "entries"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "module", "category", "source", "targets"],
+        "properties": {
+          "id": { "type": "string", "description": "UUID, generated on creation." },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "module": { "type": "string", "description": "DCS aircraft/module this entry applies to." },
+          "category": {
+            "type": "string",
+            "enum": ["aircraft-library", "reinstall-after-update", "livery", "misc"]
+          },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "source": {
+            "type": "object",
+            "required": ["kind", "path"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["folder"] },
+              "path": { "type": "string", "description": "Local library folder this entry copies from." }
+            }
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["installLocationKind", "dcsVariant", "relativePath"],
+              "properties": {
+                "installLocationKind": { "type": "string", "enum": ["dcsInstall", "savedGames"] },
+                "dcsVariant": { "type": "string", "enum": ["stable", "openbeta", "any"] },
+                "relativePath": { "type": "string" },
+                "fileMappings": {
+                  "type": "array",
+                  "description": "Empty = copy the whole source folder. Non-empty = explicit source->target file pairs.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "sourceRelative": { "type": "string" },
+                      "targetRelative": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "needsReinstallAfterUpdate": { "type": "boolean" },
+          "notes": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}
