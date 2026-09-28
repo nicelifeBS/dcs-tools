@@ -3,8 +3,10 @@
 #include <utility>
 
 #ifdef Q_OS_WIN
-#include <tlhelp32.h>
+// windows.h must come first: tlhelp32.h uses types (DWORD, WCHAR, HANDLE, ...) that
+// only exist once windows.h has defined them.
 #include <windows.h>
+#include <tlhelp32.h>
 #endif
 
 DcsProcessGuard::DcsProcessGuard(ProcessListProvider processListProvider)
