@@ -76,3 +76,20 @@ bool ModuleRuleModel::removeRule(const QString &id)
 {
     return m_store->removeRule(id);
 }
+
+QVariantMap ModuleRuleModel::ruleFields(const QString &id) const
+{
+    ModuleRule *rule = m_store->findById(id);
+    if (!rule)
+        return {};
+
+    QVariantMap fields;
+    fields[QStringLiteral("id")] = rule->id();
+    fields[QStringLiteral("module")] = rule->module();
+    fields[QStringLiteral("category")] = rule->category();
+    fields[QStringLiteral("installLocationKind")] = rule->installLocationKind();
+    fields[QStringLiteral("dcsVariant")] = rule->dcsVariant();
+    fields[QStringLiteral("pathTemplate")] = rule->pathTemplate();
+    fields[QStringLiteral("notes")] = rule->notes();
+    return fields;
+}

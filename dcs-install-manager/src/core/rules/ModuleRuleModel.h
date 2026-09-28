@@ -36,6 +36,10 @@ public:
     Q_INVOKABLE bool updateRule(const QString &id, const QVariantMap &fields);
     Q_INVOKABLE bool removeRule(const QString &id);
 
+    // Milestone 4 addition: lets QML read every field of one rule by id, for
+    // AddEditRuleDialog's edit mode.
+    Q_INVOKABLE QVariantMap ruleFields(const QString &id) const;
+
 private:
     ModuleRuleStore *m_store;
 };
