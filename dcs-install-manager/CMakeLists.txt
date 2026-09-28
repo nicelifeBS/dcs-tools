@@ -20,6 +20,14 @@ set(CORE_SOURCES
     src/core/catalog/ModCatalog.cpp
     src/core/catalog/ModCatalogModel.h
     src/core/catalog/ModCatalogModel.cpp
+    src/core/rules/ModuleRule.h
+    src/core/rules/ModuleRule.cpp
+    src/core/rules/ModuleRuleStore.h
+    src/core/rules/ModuleRuleStore.cpp
+    src/core/rules/ModuleRuleModel.h
+    src/core/rules/ModuleRuleModel.cpp
+    src/core/rules/ModuleRuleResolver.h
+    src/core/rules/ModuleRuleResolver.cpp
 )
 
 # No WIN32 flag yet: main.cpp is still a console smoke test (milestones 1-3), and
@@ -33,7 +41,9 @@ qt_add_executable(DcsInstallManager
 qt_add_resources(DcsInstallManager "data"
     PREFIX "/data"
     BASE data
-    FILES data/default-catalog.json
+    FILES
+        data/default-catalog.json
+        data/default-module-rules.json
 )
 
 target_link_libraries(DcsInstallManager PRIVATE Qt6::Core)

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "livery": {
+      "installLocationKind": "savedGames",
+      "dcsVariant": "any",
+      "pathTemplate": "Liveries/{module}/{entryName}"
+    }
+  },
+  "moduleRules": []
+}
