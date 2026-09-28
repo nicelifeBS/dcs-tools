@@ -28,6 +28,14 @@ set(CORE_SOURCES
     src/core/rules/ModuleRuleModel.cpp
     src/core/rules/ModuleRuleResolver.h
     src/core/rules/ModuleRuleResolver.cpp
+    src/core/install/FileOpsUtil.h
+    src/core/install/FileOpsUtil.cpp
+    src/core/install/InstallStateStore.h
+    src/core/install/InstallStateStore.cpp
+    src/core/install/ModInstaller.h
+    src/core/install/ModInstaller.cpp
+    src/core/safety/DcsProcessGuard.h
+    src/core/safety/DcsProcessGuard.cpp
 )
 
 # No WIN32 flag yet: main.cpp is still a console smoke test (milestones 1-3), and
