@@ -22,8 +22,10 @@ set(CORE_SOURCES
     src/core/catalog/ModCatalogModel.cpp
 )
 
+# No WIN32 flag yet: main.cpp is still a console smoke test (milestones 1-3), and
+# WIN32 would suppress its console window on Windows. Add WIN32 back once the QML UI
+# replaces it in milestone 4.
 qt_add_executable(DcsInstallManager
-    WIN32
     src/main.cpp
     ${CORE_SOURCES}
 )
