@@ -7,37 +7,18 @@
 #include <QStandardPaths>
 #include <QUrl>
 
+#include "app/DcsPathLocatorAdapter.h"
 #include "app/ModInstallerAdapter.h"
 #include "app/ModuleRuleResolverAdapter.h"
 #include "core/catalog/ModCatalog.h"
 #include "core/catalog/ModCatalogModel.h"
 #include "core/install/InstallStateStore.h"
 #include "core/install/ModInstaller.h"
+#include "core/paths/DcsPathLocator.h"
 #include "core/rules/ModuleRuleModel.h"
 #include "core/rules/ModuleRuleStore.h"
 #include "core/safety/DcsProcessGuard.h"
-
-namespace {
-
-// --- Milestone-5 stand-in -------------------------------------------------------
-// ModInstaller needs a root-resolver callback to do anything at all. Real path
-// resolution (DcsPathLocator auto-detecting Stable/Open Beta installs and Saved
-// Games, plus SettingsManager-backed user overrides) is milestone 5. Until then,
-// both installLocationKind values ("dcsInstall", "savedGames") resolve to two
-// distinct subfolders under this app's own data directory, ignoring dcsVariant
-// entirely, so Install/Uninstall are genuinely clickable and demoable today without
-// needing a real DCS install on this machine. This is NOT the final behavior.
-QString placeholderRootResolver(const QString &appDataDir, const QString &installLocationKind)
-{
-    const QString subfolder = installLocationKind == QStringLiteral("dcsInstall")
-                                   ? QStringLiteral("_placeholder_dcsInstall")
-                                   : QStringLiteral("_placeholder_savedGames");
-    const QString root = QDir(appDataDir).filePath(subfolder);
-    QDir().mkpath(root);
-    return root;
-}
-
-} // namespace
+#include "core/settings/SettingsManager.h"
 
 int main(int argc, char *argv[])
 {
@@ -57,6 +38,8 @@ int main(int argc, char *argv[])
     const QString rulesPath = appDataDir + QStringLiteral("/module_rules.json");
     const QString installStatePath = appDataDir + QStringLiteral("/install_state.json");
     const QString backupsRootPath = appDataDir + QStringLiteral("/backups");
+    // QSettings::IniFormat, not the registry - see SettingsManager's class comment.
+    const QString settingsPath = appDataDir + QStringLiteral("/settings.ini");
 
     if (!QFile::exists(catalogPath))
         QFile::copy(QStringLiteral(":/data/default-catalog.json"), catalogPath);
@@ -77,9 +60,25 @@ int main(int argc, char *argv[])
 
     DcsProcessGuard processGuard;
 
+    // SettingsManager loads on construction (from settingsPath, creating it empty if
+    // absent) - must exist before the root resolver below, which reads from it.
+    SettingsManager settingsManager(settingsPath);
+
+    DcsPathLocator pathLocator;
+    DcsPathLocatorAdapter pathLocatorAdapter(&pathLocator);
+
+    // Milestone 5 root resolver: reads the single configured dcsInstallPath/
+    // savedGamesPath from SettingsManager. Deliberately ignores the requested
+    // dcsVariant entirely (see SettingsManager's class comment for the scoping
+    // rationale) - whatever single path the user has confirmed in Settings is used
+    // regardless of whether a target asked for "stable", "openbeta" or "any".
     const ModInstaller::RootResolver rootResolver =
-        [appDataDir](const QString &installLocationKind, const QString & /*dcsVariant*/) {
-            return placeholderRootResolver(appDataDir, installLocationKind);
+        [&settingsManager](const QString &installLocationKind, const QString & /*dcsVariant*/) {
+            if (installLocationKind == QStringLiteral("dcsInstall"))
+                return settingsManager.dcsInstallPath();
+            if (installLocationKind == QStringLiteral("savedGames"))
+                return settingsManager.savedGamesPath();
+            return QString(); // unresolvable - ModInstaller treats this as a failure.
         };
 
     ModInstaller installer(&catalog, &stateStore, &processGuard, rootResolver, backupsRootPath);
@@ -121,6 +120,8 @@ int main(int argc, char *argv[])
     rootContext->setContextProperty(QStringLiteral("moduleRuleModel"), &ruleModel);
     rootContext->setContextProperty(QStringLiteral("ruleResolver"), &ruleResolverAdapter);
     rootContext->setContextProperty(QStringLiteral("modInstaller"), &installerAdapter);
+    rootContext->setContextProperty(QStringLiteral("settingsManager"), &settingsManager);
+    rootContext->setContextProperty(QStringLiteral("dcsPathLocator"), &pathLocatorAdapter);
 
     QObject::connect(
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,

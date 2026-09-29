@@ -11,62 +11,104 @@ Basic.ApplicationWindow {
     title: "DCS Install Manager"
     color: Theme.colorBackground
 
-    property string currentView: "catalog" // "catalog" | "rules"
+    property string currentView: "catalog" // "catalog" | "rules" | "settings"
 
-    header: Rectangle {
-        height: 56
-        color: Theme.colorSurface
+    // Blocking first-run step (milestone 5): the normal toolbar/Loader UI is
+    // unreachable until a DCS install path is confirmed. Reactive on
+    // settingsManager's own property - confirming a path in PathSetupForm unblocks
+    // the app immediately, no restart needed.
+    readonly property bool firstRunPending: settingsManager.dcsInstallPath.length === 0
 
+    header: Loader {
+        active: !window.firstRunPending
+        sourceComponent: headerComponent
+    }
+
+    Component {
+        id: headerComponent
         Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: Theme.colorBorder
-        }
+            height: 56
+            color: Theme.colorSurface
 
-        Row {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: Theme.spacingLarge
-            Text {
-                text: "DCS Install Manager"
-                color: Theme.colorText
-                font.pixelSize: 17
-                font.bold: true
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: Theme.colorBorder
             }
-        }
 
-        Row {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.rightMargin: Theme.spacingLarge
-            spacing: Theme.spacingSmall
+            Row {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Theme.spacingLarge
+                Text {
+                    text: "DCS Install Manager"
+                    color: Theme.colorText
+                    font.pixelSize: 17
+                    font.bold: true
+                }
+            }
 
-            FlatButton {
-                text: window.currentView === "catalog" ? "Module Rules" : "Catalog"
-                accentColor: Theme.colorAccentBlue
-                onClicked: window.currentView = (window.currentView === "catalog" ? "rules" : "catalog")
-            }
-            FlatButton {
-                text: "Add Entry"
-                visible: window.currentView === "catalog"
-                accentColor: Theme.colorAccentYellow
-                textColor: Theme.colorText
-                onClicked: addEditEntryDialog.openForNew()
-            }
-            FlatButton {
-                text: "Add Rule"
-                visible: window.currentView === "rules"
-                accentColor: Theme.colorAccentYellow
-                textColor: Theme.colorText
-                onClicked: addEditRuleDialog.openForNew()
+            Row {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.rightMargin: Theme.spacingLarge
+                spacing: Theme.spacingSmall
+
+                FlatButton {
+                    text: "Catalog"
+                    accentColor: window.currentView === "catalog" ? Theme.colorAccentBlue : Theme.colorBorder
+                    textColor: window.currentView === "catalog" ? "white" : Theme.colorText
+                    onClicked: window.currentView = "catalog"
+                }
+                FlatButton {
+                    text: "Module Rules"
+                    accentColor: window.currentView === "rules" ? Theme.colorAccentBlue : Theme.colorBorder
+                    textColor: window.currentView === "rules" ? "white" : Theme.colorText
+                    onClicked: window.currentView = "rules"
+                }
+                FlatButton {
+                    text: "Settings"
+                    accentColor: window.currentView === "settings" ? Theme.colorAccentBlue : Theme.colorBorder
+                    textColor: window.currentView === "settings" ? "white" : Theme.colorText
+                    onClicked: window.currentView = "settings"
+                }
+                FlatButton {
+                    text: "Add Entry"
+                    visible: window.currentView === "catalog"
+                    accentColor: Theme.colorAccentYellow
+                    textColor: Theme.colorText
+                    onClicked: addEditEntryDialog.openForNew()
+                }
+                FlatButton {
+                    text: "Add Rule"
+                    visible: window.currentView === "rules"
+                    accentColor: Theme.colorAccentYellow
+                    textColor: Theme.colorText
+                    onClicked: addEditRuleDialog.openForNew()
+                }
             }
         }
     }
 
     Loader {
         anchors.fill: parent
-        sourceComponent: window.currentView === "catalog" ? catalogViewComponent : moduleRulesViewComponent
+        sourceComponent: window.firstRunPending ? firstRunComponent
+                        : window.currentView === "rules" ? moduleRulesViewComponent
+                        : window.currentView === "settings" ? settingsViewComponent
+                        : catalogViewComponent
+    }
+
+    Component {
+        id: firstRunComponent
+        Rectangle {
+            color: Theme.colorBackground
+
+            PathSetupForm {
+                anchors.centerIn: parent
+                width: Math.min(560, parent.width - 2 * Theme.spacingLarge)
+            }
+        }
     }
 
     Component {
@@ -81,6 +123,11 @@ Basic.ApplicationWindow {
         ModuleRulesView {
             onEditRequested: (ruleId) => addEditRuleDialog.openForEdit(ruleId)
         }
+    }
+
+    Component {
+        id: settingsViewComponent
+        SettingsView {}
     }
 
     AddEditEntryDialog {

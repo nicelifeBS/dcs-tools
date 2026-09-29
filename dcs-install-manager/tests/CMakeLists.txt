@@ -59,3 +59,25 @@ target_link_libraries(tst_modinstaller PRIVATE Qt6::Core Qt6::Test)
 target_include_directories(tst_modinstaller PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 add_test(NAME tst_modinstaller COMMAND tst_modinstaller)
+
+set(PATHLOCATOR_SOURCES_FOR_TEST
+    ${CMAKE_SOURCE_DIR}/src/core/paths/DcsPathLocator.h
+    ${CMAKE_SOURCE_DIR}/src/core/paths/DcsPathLocator.cpp
+)
+
+qt_add_executable(tst_dcspathlocator tst_dcspathlocator.cpp ${PATHLOCATOR_SOURCES_FOR_TEST})
+target_link_libraries(tst_dcspathlocator PRIVATE Qt6::Core Qt6::Test)
+target_include_directories(tst_dcspathlocator PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME tst_dcspathlocator COMMAND tst_dcspathlocator)
+
+set(SETTINGSMANAGER_SOURCES_FOR_TEST
+    ${CMAKE_SOURCE_DIR}/src/core/settings/SettingsManager.h
+    ${CMAKE_SOURCE_DIR}/src/core/settings/SettingsManager.cpp
+)
+
+qt_add_executable(tst_settingsmanager tst_settingsmanager.cpp ${SETTINGSMANAGER_SOURCES_FOR_TEST})
+target_link_libraries(tst_settingsmanager PRIVATE Qt6::Core Qt6::Test)
+target_include_directories(tst_settingsmanager PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME tst_settingsmanager COMMAND tst_settingsmanager)
