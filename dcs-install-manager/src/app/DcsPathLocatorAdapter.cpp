@@ -27,9 +27,9 @@ QVariantList DcsPathLocatorAdapter::detectInstalls() const
     return results;
 }
 
-QString DcsPathLocatorAdapter::detectSavedGamesRoot() const
+QString DcsPathLocatorAdapter::detectSavedGamesRoot(const QString &variant) const
 {
-    return DcsPathLocator::detectSavedGamesRoot();
+    return DcsPathLocator::detectSavedGamesRoot(variant);
 }
 
 bool DcsPathLocatorAdapter::isValidInstallRoot(const QString &path) const

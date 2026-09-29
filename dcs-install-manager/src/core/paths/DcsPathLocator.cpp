@@ -91,7 +91,27 @@ QStringList DcsPathLocator::parseSteamLibraryFolders(const QString &vdfContent)
     return paths;
 }
 
-QString DcsPathLocator::detectSavedGamesRoot()
+QString DcsPathLocator::detectSavedGamesRoot(const QString &variant)
+{
+    const QString base = platformSavedGamesBase();
+    if (base.isEmpty())
+        return QString();
+    return savedGamesPathForVariant(base, variant);
+}
+
+QString DcsPathLocator::savedGamesPathForVariant(const QString &baseSavedGamesPath,
+                                                  const QString &variant)
+{
+    if (baseSavedGamesPath.isEmpty())
+        return QString();
+
+    const QString subfolder = variant.compare(QStringLiteral("openbeta"), Qt::CaseInsensitive) == 0
+                                   ? QStringLiteral("DCS.openbeta")
+                                   : QStringLiteral("DCS");
+    return QDir(baseSavedGamesPath).filePath(subfolder);
+}
+
+QString DcsPathLocator::platformSavedGamesBase()
 {
 #ifdef Q_OS_WIN
     QString result;

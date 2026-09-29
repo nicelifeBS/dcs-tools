@@ -177,7 +177,7 @@ Rectangle {
                 accentColor: Theme.colorBorder
                 textColor: Theme.colorText
                 onClicked: {
-                    const detected = dcsPathLocator.detectSavedGamesRoot()
+                    const detected = dcsPathLocator.detectSavedGamesRoot(variantBox.currentText)
                     if (detected.length > 0)
                         savedGamesPathField.text = detected
                 }
@@ -218,6 +218,10 @@ Rectangle {
                             const i = variantBox.model.indexOf(modelData.variant)
                             if (i >= 0)
                                 variantBox.currentIndex = i
+
+                            const detectedSavedGames = dcsPathLocator.detectSavedGamesRoot(modelData.variant)
+                            if (detectedSavedGames.length > 0)
+                                savedGamesPathField.text = detectedSavedGames
                         }
                     }
                 }

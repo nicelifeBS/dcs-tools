@@ -22,7 +22,7 @@ public:
     // Each entry is a {variant, path} map, mirroring DcsPathLocator::DetectedInstall.
     Q_INVOKABLE QVariantList detectInstalls() const;
 
-    Q_INVOKABLE QString detectSavedGamesRoot() const;
+    Q_INVOKABLE QString detectSavedGamesRoot(const QString &variant) const;
 
     Q_INVOKABLE bool isValidInstallRoot(const QString &path) const;
 

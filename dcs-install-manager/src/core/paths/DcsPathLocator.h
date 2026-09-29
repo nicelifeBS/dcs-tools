@@ -39,11 +39,24 @@ public:
     // variantForPath). Order follows the provider's own order; no further sorting.
     QList<DetectedInstall> detectInstalls() const;
 
-    // Saved Games root via SHGetKnownFolderPath(FOLDERID_SavedGames) on Windows (this
-    // correctly follows OneDrive/junction relocation, unlike a hardcoded path) - empty
-    // string elsewhere or on any failure. Not unit-testable here; guarded + a safe
-    // non-crashing fallback is the whole of what's verifiable off real Windows.
-    static QString detectSavedGamesRoot();
+    // Saved Games root for a given DCS variant ("stable" -> .../Saved Games/DCS,
+    // "openbeta" -> .../Saved Games/DCS.openbeta) via
+    // SHGetKnownFolderPath(FOLDERID_SavedGames) on Windows (this correctly follows
+    // OneDrive/junction relocation, unlike a hardcoded path) plus the DCS/DCS.openbeta
+    // subfolder name - empty string elsewhere or on any failure. The subfolder is not
+    // required to already exist (a fresh install may not have launched DCS yet, so it
+    // hasn't created it) - still offered as selectable per the plan, not treated as
+    // "detection failed". The base-folder-plus-variant composition is not unit-
+    // testable here (needs the real API); savedGamesPathForVariant() below is, and is
+    // what this actually delegates to once it has the base path.
+    static QString detectSavedGamesRoot(const QString &variant = QStringLiteral("stable"));
+
+    // Pure helper: appends the right DCS subfolder name for `variant` onto a base
+    // Saved Games path. Split out from detectSavedGamesRoot() specifically so this
+    // part - the actual "which subfolder" logic - is unit-testable without any real
+    // Windows API.
+    static QString savedGamesPathForVariant(const QString &baseSavedGamesPath,
+                                             const QString &variant);
 
     // True if `path` contains a bin/dcs.exe or bin-mt/dcs.exe (DCS ships the same exe
     // name in either subfolder depending on single/multi-threaded mode - see
@@ -63,6 +76,7 @@ public:
 
 private:
     static QStringList platformCandidatePaths();
+    static QString platformSavedGamesBase();
 
     CandidateProvider m_candidateProvider;
 };

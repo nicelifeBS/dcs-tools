@@ -25,6 +25,11 @@ private slots:
     void parseSteamLibraryFolders_extractsAllPathsFromSampleVdf();
     void parseSteamLibraryFolders_emptyForContentWithNoPaths();
     void parseSteamLibraryFolders_unescapesDoubledBackslashes();
+
+    void savedGamesPathForVariant_appendsDcsForStable();
+    void savedGamesPathForVariant_appendsDcsOpenBetaForOpenBeta();
+    void savedGamesPathForVariant_isCaseInsensitiveOnVariant();
+    void savedGamesPathForVariant_emptyWhenBaseIsEmpty();
 };
 
 namespace {
@@ -192,6 +197,32 @@ void tst_DcsPathLocator::parseSteamLibraryFolders_unescapesDoubledBackslashes()
 
     QCOMPARE(paths.size(), 1);
     QCOMPARE(paths.at(0), QStringLiteral("E:\\Games\\SteamLibrary"));
+}
+
+void tst_DcsPathLocator::savedGamesPathForVariant_appendsDcsForStable()
+{
+    QCOMPARE(DcsPathLocator::savedGamesPathForVariant(QStringLiteral("C:/Users/bjoern/Saved Games"),
+                                                       QStringLiteral("stable")),
+             QStringLiteral("C:/Users/bjoern/Saved Games/DCS"));
+}
+
+void tst_DcsPathLocator::savedGamesPathForVariant_appendsDcsOpenBetaForOpenBeta()
+{
+    QCOMPARE(DcsPathLocator::savedGamesPathForVariant(QStringLiteral("C:/Users/bjoern/Saved Games"),
+                                                       QStringLiteral("openbeta")),
+             QStringLiteral("C:/Users/bjoern/Saved Games/DCS.openbeta"));
+}
+
+void tst_DcsPathLocator::savedGamesPathForVariant_isCaseInsensitiveOnVariant()
+{
+    QCOMPARE(DcsPathLocator::savedGamesPathForVariant(QStringLiteral("C:/Saved Games"),
+                                                       QStringLiteral("OpenBeta")),
+             QStringLiteral("C:/Saved Games/DCS.openbeta"));
+}
+
+void tst_DcsPathLocator::savedGamesPathForVariant_emptyWhenBaseIsEmpty()
+{
+    QVERIFY(DcsPathLocator::savedGamesPathForVariant(QString(), QStringLiteral("stable")).isEmpty());
 }
 
 QTEST_APPLESS_MAIN(tst_DcsPathLocator)
