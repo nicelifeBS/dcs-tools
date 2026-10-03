@@ -1,4 +1,4 @@
-"""A stand-in for DCS + hook/ReplayHelper.lua, for developing the app without DCS.
+"""A stand-in for DCS + src/replay_helper/hook/ReplayHelper.lua, for developing the app without DCS.
 
 Speaks the hook's UDP protocol on the same ports and simulates a replay: a model clock that
 runs at the commanded time acceleration, pause, and a stop checked every frame. Standard

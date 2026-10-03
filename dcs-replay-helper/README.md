@@ -1,77 +1,82 @@
 # DCS Replay Helper
 
-A desktop helper that drives a DCS track replay that is already running.
+A desktop helper that drives a DCS track replay that's already running. Plan your shots in Tacview, then let the app take the replay there.
 
-- Play and pause the replay.
-- Jump forward to a moment you picked beforehand in Tacview: a bookmark or event from the `.acmi` file. The jump uses a speed cap, for example at most 4x.
-- Stop with a pre-roll before the event, plus an optional post-roll stop after it.
+- **Pick a moment:** a bookmark or event from the Tacview recording (`.acmi`), or a time you type in.
+- **Jump forward to it under a speed cap**, for example at most 4x. Replays can only run forward, and fast acceleration can desync them.
+- **Stop with a pre-roll** a few seconds before the event, and optionally a **post-roll** just after it.
 
-The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scripts\Hooks`. The hook reports the replay clock and pauses DCS on the exact frame a target time is reached: 0.002 s late at 1x and 0.015 s at 4x in testing. Time acceleration is driven by the app sending DCS's own keys (`LCtrl+Z` / `LAlt+Z` / `LShift+Z`), because DCS gives Lua no way to set it. See [SPIKE.md](SPIKE.md) for how that was established.
+The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scripts\Hooks`. The hook reports the replay clock and pauses DCS on the exact frame a target is reached: 0.002 s late at 1x and 0.015 s at 4x in testing.
 
-## Status
+DCS gives Lua no way to set time acceleration. So the app presses DCS's own keys (`LCtrl+Z` up, `LAlt+Z` down, `LShift+Z` back to 1x) one at a time, and checks each step against the speed DCS reports. [SPIKE.md](SPIKE.md) shows how that was established.
 
-**Milestone 5 of 6: time sync.**
-- **Done:**
-  - The window shows the connection, the model clock and mission time of day, and the commanded and measured speed. It has Play/Pause.
-  - **Seek:** enter a target in replay time (`1:07.95`, `67.95`) or mission time (`16:31:07`), and set a pre-roll and an optional post-roll.
-    - The app pauses, sets the **Seek at** speed while paused, and arms a stop at the target minus the pre-roll.
-    - It plays to the stop, then sets the **Playback** speed while still paused.
-    - With a post-roll set, **Play through** then plays past the target and pauses that long after it.
-    - Targets behind the replay are refused, because replays only run forward.
-    - If something unexpected happens mid-seek, the seek stops, the replay is left paused, and the reason is shown. That covers the track restarting, a pause from DCS, a lost connection, or DCS not answering.
-  - **Speed:** set by pressing one key at a time and waiting for DCS to confirm each step. A missed key is retried up to 3 times.
-    - **Seek at** is also the speed limit: if the replay ever runs faster, it's paused and brought back down.
-  - **Tacview events:** open a `.acmi`, `.zip.acmi` or `.txt.acmi` recording to list its events beside the controls.
-    - The list holds bookmarks you added in Tacview, Tacview's own events, and three kinds worked out from the recording:
-      - **launch salvos:** missiles, rockets and bombs, for example `AGR_20A ×7`
-      - **units lost:** an aircraft, ground unit or ship that disappears without leaving the area
-      - **ejections**
-    - Filter by kind, or search labels and units.
-    - Double-click an event, or select it and click **Go to event**, to seek there with the Seek panel's pre-roll and post-roll.
-    - Events whose pre-roll point is already behind the replay are grayed out.
-    - Large recordings load in the background: about 4 s for 200 MB of uncompressed data.
-  - **Time sync:** replay time = Tacview time + offset.
-    - Tacview counts from its ReferenceTime, which is UTC. DCS counts from mission start, which is local time on the map.
-    - The app works out the time zone by rounding the difference between the two start times to 15 minutes. For the sample that's UTC+4 on Caucasus, so the offset is 0.
-    - A recording started after the mission keeps the remainder as its offset.
-    - The mission start comes from DCS once connected. Before that, **Open track…** reads it from the `.trk` you are about to replay, along with the date, map and length.
-    - You can override the time zone, and add a fine adjustment in seconds.
-    - **Sync to selected event** sets the fine adjustment for you: pause DCS on the moment the selected event happens, then click.
-    - The offset is saved per recording.
-    - A Tacview date more than a day away from the mission date shows a warning.
-- **Not built yet:** hook installer, settings for the speed and roll defaults, and a packaged exe (milestone 6).
+## Install
 
-## Use with DCS
+1. Get `DCSReplayHelper.exe`. Download it from this repository's **Actions** tab (the *DCS Replay Helper* workflow → *DCSReplayHelper* artifact), or build it yourself (see Development).
+2. Run it and choose **Tools → Install / update DCS hook…**.
+   - The app finds your `Saved Games\DCS*` folders and puts `ReplayHelper.lua` into `Scripts\Hooks`. Nothing is written to the DCS install folder.
+   - It also removes the old spike hook, `ReplayHelperSpike.lua`, if it's there, because the two would clash.
+3. Restart DCS. The app's log says at startup whether the hook is installed and current.
 
-1. Copy `hook/ReplayHelper.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`.
-   - Use `DCS.openbeta` if that's your folder.
-   - Remove `ReplayHelperSpike.lua` from there if it's still installed, because both use the same ports.
-2. Restart DCS. `Logs\dcs.log` should contain `REPLAYHELPER (Main): loaded 0.1.0 (callbacks registered)`.
-3. Start the app from this folder with `uv run replay-helper`. On Windows `uv` picks up Python from the repo's `.python-version`.
-4. Play a track in DCS. The app connects within a second.
-5. Type a time under **Seek**, set the pre-roll and post-roll, and click **Go**. To change speed, the app brings the DCS window to the front to press the keys, so DCS must not be minimised.
-6. Or click **Open Tacview recording…** and double-click a bookmark. You can also start the app with the recording, and optionally its track: `uv run replay-helper recording.zip.acmi track.trk`.
-7. If an event lands early or late, pause DCS on the moment it happens, select it in the list, and click **Sync to selected event**.
+## Use
+
+1. **Connect:** play a track in DCS. The app connects within a second and shows the replay clock and the mission time of day.
+2. **Load your Tacview recording:** **File → Open Tacview recording…**, or `DCSReplayHelper.exe recording.zip.acmi [track.trk]`. Its bookmarks are listed on the right.
+   - Tick **Launches**, **Kills**, **Ejections** and so on to see events the app works out from the recording. There's also a search box.
+3. **Check the time sync** box above the list. It should read for example "time zone UTC+4:00 (auto) · replay time = Tacview time +0.00 s".
+   - Tacview times are UTC and the mission clock is local map time. The app works out the difference.
+   - **Open track…** checks this before DCS is running.
+4. **Set the seek options:** set **Pre-roll** (default 5 s) and, if you want, **Post-roll**. **Seek at** is the speed for jumping, and also the most the replay is ever allowed to run. **Playback** is the speed to watch at.
+5. **Seek:** double-click a bookmark, or select it and click **Go to event**.
+   - The app pauses, sets the seek speed while paused, runs to the pre-roll point, and pauses there at playback speed.
+   - Press **Play** (or **Play through**, with a post-roll) to roll.
+   - You can also type a time under **Seek**, in replay time (`1:07.95`) or mission time (`16:31:07`).
+6. **Fix an event that lands early or late:** pause DCS exactly when it happens, select it, and click **Sync to selected event**. The correction is saved for that recording.
+
+**Keystrokes:** to press the speed keys, the app brings the DCS window to the front, so DCS must not be minimised.
+
+**What is remembered:** speeds, pre-roll and post-roll, filters, the last folders used, and the window layout. They're kept in `%APPDATA%\dcs-replay-helper\settings.json`.
+
+## How it works
+
+- **Hook (`src/replay_helper/hook/ReplayHelper.lua`):**
+  - Sends `STATE` about 10 times a second: model time, measured and commanded speed, pause, armed stop, and mission start, date and map.
+  - Takes `PAUSE`, `RESUME`, `ARMSTOP <t>` and `DISARM`.
+  - Checks the armed stop every frame and pauses on the first frame at or past it.
+  - Refuses stops behind the replay, and drops a stop if the track restarts or the mission ends.
+- **Speed:** keys are pressed one at a time. Each step waits for DCS to report the new speed, and a missed key is retried up to 3 times.
+  - Above 1x, each step adds 1x. Below 1x, it halves. Going down from above 1x is done as "back to 1x" then up.
+  - If the replay ever runs faster than **Seek at**, it's paused and brought back down.
+- **Seek:** pause, set the seek speed (while paused), arm the stop, resume, then set the playback speed on arrival (still paused).
+  - Anything unexpected ends the seek with a reason and leaves the replay paused: the track restarting, a pause from DCS, a lost connection, or DCS not confirming a step.
+- **Tacview:** ACMI 2.x recordings are streamed, and positions are skipped without being parsed. About 4.5 s for 200 MB of uncompressed data.
+  - Bookmarks you add in Tacview are stored in the file and listed by name.
+  - Launches are grouped into salvos, units that disappear without leaving the area count as lost, and `PILOT_*` objects mark ejections.
+- **Time sync:** replay time = Tacview time + offset, where offset = (ReferenceTime + time zone) − mission start + fine adjustment. The time zone is rounded to 15 minutes, and both it and the fine adjustment can be overridden.
 
 ## Development
 
 ```
 cd dcs-replay-helper
-uv run pytest                      # hook (Lua 5.1 via lupa), protocol, link, fake DCS, window
-uv run python tools/fake_dcs.py    # a stand-in for DCS + hook, on the same ports
-uv run replay-helper               # in a second terminal
+uv run pytest                                          # 236 tests: hook (Lua 5.1 via lupa), protocol, link,
+                                                       # speed, seek, Tacview, time sync, installer, window
+uv run python tools/fake_dcs.py                        # a stand-in for DCS + hook, on the same ports
+uv run replay-helper                                   # the app, in a second terminal
+uv run --group build pyinstaller replay_helper.spec    # dist/DCSReplayHelper.exe (on Windows)
 ```
 
-The fake DCS simulates the replay clock, pause and stop. In place of keystrokes it accepts `KEY UP|DOWN|NORMAL` commands, using the same speed ladder DCS showed: +1x per step above 1x, halving below it.
+The fake DCS simulates the replay clock, pause and stop. In place of keystrokes it accepts `KEY UP|DOWN|NORMAL` commands, using the speed steps DCS showed.
 
 The window tests run headless (`QT_QPA_PLATFORM=offscreen`). They skip on Linux machines without `libEGL`.
+
+The GitHub workflow `.github/workflows/replay-helper.yml` runs the tests on Linux and Windows and builds the exe.
 
 ## Layout
 
 ```
-hook/ReplayHelper.lua              # the DCS hook (install into Saved Games\DCS\Scripts\Hooks)
-hook/spike/ReplayHelperSpike.lua   # milestone 0 probe hook, kept for reference
 src/replay_helper/
+  hook/ReplayHelper.lua            # the DCS hook (installed by Tools > Install / update DCS hook)
+  hook_installer.py                # find Saved Games\DCS*, install/update the hook, remove the spike
   dcs/protocol.py                  # the UDP line protocol (see the hook's header)
   dcs/link.py                      # Qt UDP link, connection watchdog, clock interpolation
   dcs/keys.py                      # LCtrl/LAlt/LShift+Z as scan codes to the DCS window (Windows)
@@ -80,12 +85,14 @@ src/replay_helper/
   seek.py                          # seek state machine: pause, speed, arm, run, slow, post-roll
   tacview/acmi.py                  # streaming ACMI 2.x reader (objects and events, no positions)
   tacview/events.py                # seekable events: bookmarks, launches, losses, ejections, ...
-  ui/event_table.py                # event list: load, filter, gray out the past, pick
-  ui/main_window.py                # main window
-  timefmt.py                       # time formatting and parsing
   timesync.py                      # Tacview time -> replay time: auto time zone, fine, sync
-  settings.py                      # JSON settings (per-recording sync) in %APPDATA%
+  settings.py                      # JSON settings in %APPDATA%\dcs-replay-helper
+  ui/main_window.py                # main window, menus, remembered settings
+  ui/event_table.py                # event list and time sync panel
+  timefmt.py                       # time formatting and parsing
   app.py                           # entry point (replay-helper / python -m replay_helper)
+replay_helper.spec                 # PyInstaller build of DCSReplayHelper.exe
+hook/spike/ReplayHelperSpike.lua   # milestone 0 probe hook, kept for reference (see SPIKE.md)
 tools/fake_dcs.py                  # DCS + hook simulator for development
 tools/spike_client.py              # console client for the spike hook
 tests/                             # pytest; lua_harness.py mocks the DCS hooks environment

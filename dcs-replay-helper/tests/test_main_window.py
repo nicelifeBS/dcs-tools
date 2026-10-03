@@ -150,3 +150,53 @@ def test_window_seeks_to_a_tacview_bookmark(qapp, app_rig) -> None:
     m = panel.model
     past = {m.event_at(r).label for r in range(m.rowCount()) if m.is_past(r)}
     assert {"Running in", "idiot"} <= past
+
+
+def test_hook_check_and_install(qapp, tmp_path) -> None:
+    from replay_helper.dcs.link import DcsLink
+    from replay_helper.ui.main_window import MainWindow
+
+    saved = tmp_path / "Saved Games"
+    (saved / "DCS" / "Logs").mkdir(parents=True)
+    hooks = saved / "DCS" / "Scripts" / "Hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "ReplayHelperSpike.lua").write_text("-- spike")
+    window = MainWindow(DcsLink())
+    window.saved_games_dir = saved
+
+    window.check_hook()
+    log = window.log_view.toPlainText()
+    assert "DCS: hook not installed; the spike hook" in log and "Tools > Install / update DCS hook" in log
+
+    done = window.install_hook(confirm=False)
+    assert [st.dcs_dir.name for st in done] == ["DCS"] and done[0].current
+    assert (hooks / "ReplayHelper.lua").exists() and not (hooks / "ReplayHelperSpike.lua").exists()
+    assert window.install_hook(confirm=False)[0].current  # nothing left to do
+    window.close()
+
+
+def test_settings_are_remembered(qapp) -> None:
+    from replay_helper.dcs.link import DcsLink
+    from replay_helper.settings import Settings
+    from replay_helper.ui.main_window import MainWindow
+
+    first = MainWindow(DcsLink(), settings=Settings())
+    first.limit_combo.setCurrentIndex(first.limit_combo.findData(8))
+    first.speed_combo.setCurrentIndex(first.speed_combo.findData(0.5))
+    first.preroll_spin.setValue(12)
+    first.postroll_spin.setValue(4)
+    first.goto_mode.setCurrentIndex(first.goto_mode.findData("mission"))
+    first.events.checks[1][0].setChecked(True)  # Launches
+    first.resize(1300, 700)
+    first.close()
+
+    second = MainWindow(DcsLink(), settings=Settings())
+    assert second.limit_combo.currentData() == 8
+    assert second.speed_combo.currentData() == 0.5
+    assert (second.preroll_spin.value(), second.postroll_spin.value()) == (12, 4)
+    assert second.goto_mode.currentData() == "mission"
+    assert [box.isChecked() for box, _ in second.events.checks][:2] == [True, True]
+    # Window size and splitter are stored (the headless test screen is too small to check the
+    # restored size: Qt clamps windows to the screen).
+    assert isinstance(Settings().get("geometry"), str) and isinstance(Settings().get("splitter"), str)
+    second.close()

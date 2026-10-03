@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QByteArray, Qt, QTimer
+from PySide6.QtGui import QAction, QCloseEvent, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
 from ..dcs.keys import Step
 from ..dcs.link import DcsLink
 from ..dcs.protocol import Arrived, Disarmed, Error, Hello, Message, Pong, State
+from .. import hook_installer
 from ..dcs.speed import SpeedController
 from ..seek import Phase, SeekController, SeekError
 from ..settings import Settings
@@ -49,6 +53,8 @@ class MainWindow(QMainWindow):
         self.link = link
         self.speed = speed
         self.seek = seek
+        self.settings = settings
+        self.saved_games_dir: Path | None = None  # None: ask Windows (tests point it elsewhere)
         self.setWindowTitle("DCS Replay Helper")
 
         # connection
@@ -178,7 +184,7 @@ class MainWindow(QMainWindow):
         left.addWidget(self.log_view, 1)
         left_widget = QWidget()
         left_widget.setLayout(left)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left_widget)
         splitter.addWidget(self.events)
         splitter.setStretchFactor(0, 0)
@@ -189,6 +195,7 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter)
         self.setCentralWidget(central)
         self.resize(1220, 660)
+        self._build_menus()
 
         link.connectedChanged.connect(self._on_connected)
         link.stateChanged.connect(self._on_state)
@@ -211,7 +218,122 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
         self._on_connected(link.connected)
+        self._restore_settings()
         self.refresh()
+
+    # --- menus ------------------------------------------------------------------------
+    def _build_menus(self) -> None:
+        file_menu = self.menuBar().addMenu("&File")
+        open_acmi = QAction("&Open Tacview recording…", self)
+        open_acmi.setShortcut(QKeySequence.StandardKey.Open)
+        open_acmi.triggered.connect(self.events.browse_acmi)
+        file_menu.addAction(open_acmi)
+        open_trk = QAction("Open &track…", self)
+        open_trk.triggered.connect(self.events.browse_track)
+        file_menu.addAction(open_trk)
+        file_menu.addSeparator()
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+        tools_menu = self.menuBar().addMenu("&Tools")
+        self.install_action = QAction("&Install / update DCS hook…", self)
+        self.install_action.triggered.connect(lambda: self.install_hook())
+        tools_menu.addAction(self.install_action)
+
+    # --- DCS hook -----------------------------------------------------------------------
+    def _dcs_dirs(self) -> list[Path]:
+        return hook_installer.find_dcs_dirs(self.saved_games_dir)
+
+    def check_hook(self) -> list[hook_installer.HookStatus]:
+        """Log the hook's state in each DCS folder; nudge towards installing when needed."""
+        dirs = self._dcs_dirs()
+        if not dirs:
+            self._log("no DCS folder found in Saved Games; use Tools > Install / update DCS hook")
+            return []
+        statuses = [hook_installer.hook_status(d) for d in dirs]
+        for st in statuses:
+            self._log(f"{st.dcs_dir.name}: {st.describe()}")
+        if any(st.needs_install for st in statuses):
+            self._log("use Tools > Install / update DCS hook, then restart DCS")
+        return statuses
+
+    def install_hook(self, confirm: bool = True) -> list[hook_installer.HookStatus]:
+        dirs = self._dcs_dirs()
+        if not dirs:
+            if not confirm:
+                return []
+            chosen = QFileDialog.getExistingDirectory(
+                self, "Choose your DCS folder in Saved Games (e.g. Saved Games\\DCS)",
+                str(hook_installer.saved_games_dir()))
+            if not chosen:
+                return []
+            dirs = [Path(chosen)]
+        statuses = [hook_installer.hook_status(d) for d in dirs]
+        todo = [st for st in statuses if st.needs_install]
+        if not todo:
+            lines = "\n".join(f"{st.dcs_dir}: {st.describe()}" for st in statuses)
+            if confirm:
+                QMessageBox.information(self, "DCS hook", f"Nothing to do.\n\n{lines}")
+            return statuses
+        if confirm:
+            lines = "\n".join(f"• {st.dcs_dir}\n    now: {st.describe()}" for st in todo)
+            answer = QMessageBox.question(
+                self, "Install DCS hook",
+                f"Install the Replay Helper hook {todo[0].bundled_version} into:\n\n{lines}\n\n"
+                f"It goes into Scripts\\Hooks; nothing is written to the DCS install folder.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return statuses
+        done = []
+        for st in todo:
+            try:
+                done.append(hook_installer.install(st.dcs_dir))
+                self._log(f"installed hook {st.bundled_version} into {st.hook_path}")
+            except OSError as exc:
+                self._log(f"could not install into {st.dcs_dir}: {exc}")
+                if confirm:
+                    QMessageBox.warning(self, "DCS hook", f"Could not install into {st.dcs_dir}:\n{exc}")
+        if done and confirm:
+            QMessageBox.information(self, "DCS hook", "Installed. Restart DCS to load the hook.")
+        return done
+
+    # --- remembered settings ------------------------------------------------------------
+    def _restore_settings(self) -> None:
+        st = self.settings
+        if st is None:
+            return
+
+        def pick(combo: QComboBox, value) -> None:
+            i = combo.findData(value)
+            if i >= 0:
+                combo.setCurrentIndex(i)
+
+        pick(self.limit_combo, st.get("seek_speed"))
+        pick(self.speed_combo, st.get("playback_speed"))
+        pick(self.goto_mode, st.get("goto_mode"))
+        for spin, key in ((self.preroll_spin, "preroll"), (self.postroll_spin, "postroll")):
+            value = st.get(key)
+            if isinstance(value, (int, float)):
+                spin.setValue(value)
+        if isinstance(st.get("event_filters"), list):
+            self.events.set_checked_filters(st.get("event_filters"))
+        for key, restore in (("geometry", self.restoreGeometry), ("splitter", self.splitter.restoreState)):
+            value = st.get(key)
+            if isinstance(value, str):
+                restore(QByteArray.fromBase64(value.encode("ascii")))
+
+        self.limit_combo.currentIndexChanged.connect(lambda: st.set("seek_speed", self.limit_combo.currentData()))
+        self.speed_combo.currentIndexChanged.connect(lambda: st.set("playback_speed", self.speed_combo.currentData()))
+        self.goto_mode.currentIndexChanged.connect(lambda: st.set("goto_mode", self.goto_mode.currentData()))
+        self.preroll_spin.valueChanged.connect(lambda v: st.set("preroll", v))
+        self.postroll_spin.valueChanged.connect(lambda v: st.set("postroll", v))
+        self.events.filtersChanged.connect(lambda labels: st.set("event_filters", labels))
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self.settings is not None:
+            self.settings.set("geometry", bytes(self.saveGeometry().toBase64()).decode("ascii"))
+            self.settings.set("splitter", bytes(self.splitter.saveState().toBase64()).decode("ascii"))
+        super().closeEvent(event)
 
     # --- helpers ----------------------------------------------------------------------
     def _limit(self) -> float:
@@ -388,6 +510,12 @@ class MainWindow(QMainWindow):
             version = self.link.hook_version or "?"
             self.conn_label.setText(f"● Connected to DCS (hook {version})")
             self.conn_label.setStyleSheet("color: #2e7d32;")
+            bundled = hook_installer.hook_version(hook_installer.bundled_hook())
+            if self.link.hook_version and not self.link.hook_version.startswith("fake") and \
+                    hook_installer.version_key(self.link.hook_version) < hook_installer.version_key(bundled):
+                self.conn_label.setText(f"● Connected to DCS (hook {version}; {bundled} available: "
+                                        "Tools > Install / update DCS hook)")
+                self.conn_label.setStyleSheet("color: #ef6c00;")
         else:
             self.conn_label.setText("○ Waiting for DCS: start a track replay with the hook installed")
             self.conn_label.setStyleSheet("color: #9e9e9e;")

@@ -1,4 +1,4 @@
-"""Runs hook/ReplayHelper.lua in Lua 5.1 against a mocked DCS hooks environment."""
+"""Runs the DCS hook (src/replay_helper/hook/ReplayHelper.lua) in Lua 5.1 against a mocked DCS hooks environment."""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import pytest
 
 pytest.importorskip("lupa.lua51")
 
-from lua_harness import HOOK_DIR, Hook  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-HOOK = HOOK_DIR / "ReplayHelper.lua"
+from lua_harness import Hook  # noqa: E402
+
+HOOK = Path(__file__).resolve().parents[1] / "src" / "replay_helper" / "hook" / "ReplayHelper.lua"
 
 
 def fields(line: str) -> dict[str, str]:

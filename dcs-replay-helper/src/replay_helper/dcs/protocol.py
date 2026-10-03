@@ -1,7 +1,7 @@
-"""The line protocol spoken with hook/ReplayHelper.lua over localhost UDP.
+"""The line protocol spoken with src/replay_helper/hook/ReplayHelper.lua over localhost UDP.
 
 One message per datagram, a keyword followed by space-separated fields. See the header of
-hook/ReplayHelper.lua for the authoritative list. Parsing is strict about the keyword and
+src/replay_helper/hook/ReplayHelper.lua for the authoritative list. Parsing is strict about the keyword and
 lenient about extra fields, so a newer hook can add fields without breaking an older app.
 """
 

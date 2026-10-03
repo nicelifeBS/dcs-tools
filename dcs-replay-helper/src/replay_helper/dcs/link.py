@@ -1,4 +1,4 @@
-"""Qt UDP link to hook/ReplayHelper.lua."""
+"""Qt UDP link to src/replay_helper/hook/ReplayHelper.lua."""
 
 from __future__ import annotations
 

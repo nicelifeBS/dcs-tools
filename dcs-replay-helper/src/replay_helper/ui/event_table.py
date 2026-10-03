@@ -218,6 +218,7 @@ class EventPanel(QWidget):
     seekRequested = Signal(object, float)  # Event, DCS replay time
     fileLoaded = Signal(object)  # AcmiFile
     synced = Signal(str)  # a sentence for the log
+    filtersChanged = Signal(list)  # labels of the checked kind filters
 
     def __init__(self, settings: Settings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -238,7 +239,7 @@ class EventPanel(QWidget):
         self.loader.progress.connect(lambda x: self.progress.setValue(int(x * 100)))
 
         self.open_button = QPushButton("Open Tacview recording…")
-        self.open_button.clicked.connect(self._browse)
+        self.open_button.clicked.connect(self.browse_acmi)
         self.file_label = QLabel("No recording loaded")
         self.file_label.setWordWrap(True)
         self.progress = QProgressBar()
@@ -315,7 +316,7 @@ class EventPanel(QWidget):
         self.track_button = QPushButton("Open track…")
         self.track_button.setToolTip("Read the mission start time from the .trk you are replaying, "
                                      "to check the times before DCS runs.")
-        self.track_button.clicked.connect(self._browse_track)
+        self.track_button.clicked.connect(self.browse_track)
         self.track_label = QLabel()
         self.track_label.setWordWrap(True)
         tz_row = QHBoxLayout()
@@ -355,11 +356,20 @@ class EventPanel(QWidget):
         layout.addLayout(bottom)
 
     # --- loading ----------------------------------------------------------------------
-    def _browse(self) -> None:
+    def _last_dir(self, key: str) -> str:
+        value = self.settings.get(key) if self.settings else None
+        return value if isinstance(value, str) else ""
+
+    def _remember_dir(self, key: str, path: str) -> None:
+        if self.settings is not None:
+            self.settings.set(key, str(Path(path).parent))
+
+    def browse_acmi(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Tacview recording", "",
+            self, "Open Tacview recording", self._last_dir("last_acmi_dir"),
             "Tacview recordings (*.acmi);;All files (*)")
         if path:
+            self._remember_dir("last_acmi_dir", path)
             self.load(path)
 
     def load(self, path: str | Path) -> None:
@@ -402,6 +412,14 @@ class EventPanel(QWidget):
         self.proxy.set_kinds(kinds)
         self._fit_columns()
         self._update_go()
+        self.filtersChanged.emit([box.text() for box, _ in self.checks if box.isChecked()])
+
+    def set_checked_filters(self, labels: list[str]) -> None:
+        for box, _ in self.checks:
+            box.blockSignals(True)
+            box.setChecked(box.text() in labels)
+            box.blockSignals(False)
+        self._apply_kinds()
 
     def _fit_columns(self) -> None:
         for col in (COL_TIME, COL_TOD, COL_KIND):
@@ -527,10 +545,12 @@ class EventPanel(QWidget):
         self.synced.emit(f"synced '{e.label}' to {fmt_model(self._now)}: replay time = Tacview time "
                          f"{self.result.offset:+.2f} s")
 
-    def _browse_track(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open the DCS track you are replaying", "",
+    def browse_track(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open the DCS track you are replaying",
+                                              self._last_dir("last_trk_dir"),
                                               "DCS tracks (*.trk);;All files (*)")
         if path:
+            self._remember_dir("last_trk_dir", path)
             self.load_track(path)
 
     def load_track(self, path: str | Path) -> None:
