@@ -39,3 +39,32 @@ def test_window_follows_dcs(qapp, fake_dcs_server) -> None:
     assert "arrived" in window.log_view.toPlainText()
     link.stop()
     window.close()
+
+
+def test_window_sets_speed_within_limit(qapp, fake_dcs_server) -> None:
+    from replay_helper.dcs.link import DcsLink
+    from replay_helper.dcs.speed import AutoKeyBackend, SpeedController
+    from replay_helper.ui.main_window import MainWindow
+
+    sim, state_port, cmd_port = fake_dcs_server(paused=True)
+    link = DcsLink(state_port=state_port, cmd_port=cmd_port)
+    assert link.start()
+    speed = SpeedController(link, AutoKeyBackend(link))
+    window = MainWindow(link, speed)
+    assert wait_until(qapp, lambda: link.connected and link.hook_version)
+
+    window.speed_combo.setCurrentIndex(window.speed_combo.findData(8))  # above the default 4x limit
+    window.speed_button.click()
+    assert wait_until(qapp, lambda: window.speed_status.text() == "Speed set to 4x")
+    assert sim.accel == 4
+    log = window.log_view.toPlainText()
+    assert "8x is above the limit; using 4x" in log
+    assert log.count("speed key LCtrl+Z") == 3
+
+    window.limit_combo.setCurrentIndex(window.limit_combo.findData(2))
+    window.play_button.click()  # runs at 4x, above the new 2x limit -> paused, back to 2x
+    assert wait_until(qapp, lambda: sim.accel == 2 and sim.paused)
+    assert "above the 2x limit: paused" in window.log_view.toPlainText()
+    speed.shutdown()
+    link.stop()
+    window.close()

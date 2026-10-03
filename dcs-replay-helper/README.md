@@ -10,9 +10,16 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 
 ## Status
 
-**Milestone 1 of 6: hook, link and a bare window.**
-- **Done:** the window shows the connection, the model clock and mission time of day, and the commanded and measured speed. It has Play/Pause, and a manual "pause at model time" stop.
-- **Not built yet:** speed control from the app (milestone 2), seeking with pre-roll and post-roll (milestone 3), and the Tacview bookmarks (milestones 4 and 5).
+**Milestone 2 of 6: speed control.**
+- **Done:**
+  - The window shows the connection, the model clock and mission time of day, and the commanded and measured speed. It has Play/Pause and a manual "pause at model time" stop.
+  - It sets the replay speed.
+- **How the speed is set:**
+  - The app presses one key at a time and waits for DCS to report the new speed before pressing the next. A key DCS missed is retried up to 3 times, and then reported.
+  - Going down from above 1x is done as "back to 1x", then up, because those are the steps measured in DCS.
+  - The speed is changed while paused when you set it while paused, so the replay never runs faster than you asked.
+- **Speed limit:** if the replay runs faster than the limit, for example after pressing `LCtrl+Z` in DCS by hand, the app pauses it and steps back down to the limit.
+- **Not built yet:** seeking with pre-roll and post-roll (milestone 3), and the Tacview bookmarks (milestones 4 and 5).
 
 ## Use with DCS
 
@@ -22,6 +29,7 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 2. Restart DCS. `Logs\dcs.log` should contain `REPLAYHELPER (Main): loaded 0.1.0 (callbacks registered)`.
 3. Start the app from this folder with `uv run replay-helper`. On Windows `uv` picks up Python from the repo's `.python-version`.
 4. Play a track in DCS. The app connects within a second.
+5. To change speed, pick it and click **Set speed**. The app brings the DCS window to the front to press the keys, so DCS must not be minimised.
 
 ## Development
 
@@ -44,6 +52,8 @@ hook/spike/ReplayHelperSpike.lua   # milestone 0 probe hook, kept for reference
 src/replay_helper/
   dcs/protocol.py                  # the UDP line protocol (see the hook's header)
   dcs/link.py                      # Qt UDP link, connection watchdog, clock interpolation
+  dcs/keys.py                      # LCtrl/LAlt/LShift+Z as scan codes to the DCS window (Windows)
+  dcs/speed.py                     # closed-loop speed controller and speed limit
   ui/main_window.py                # main window
   timefmt.py                       # time formatting
   app.py                           # entry point (replay-helper / python -m replay_helper)

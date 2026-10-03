@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .dcs import protocol
 from .dcs.link import DcsLink
+from .dcs.speed import AutoKeyBackend, SpeedController
 from .ui.main_window import MainWindow
 
 
@@ -23,9 +24,11 @@ def main() -> int:
             "Is another copy of the Replay Helper, or the spike client, still running?",
         )
         return 1
-    window = MainWindow(link)
+    speed = SpeedController(link, AutoKeyBackend(link))
+    window = MainWindow(link, speed)
     window.show()
     code = app.exec()
+    speed.shutdown()
     link.stop()
     return code
 

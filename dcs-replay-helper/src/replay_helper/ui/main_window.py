@@ -1,4 +1,4 @@
-"""Main window. Milestone 1: connection, clock, play/pause and a manual stop."""
+"""Main window: connection, clock, play/pause, speed and a manual stop."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
@@ -20,16 +21,23 @@ from PySide6.QtWidgets import (
 )
 
 from ..dcs.link import DcsLink
+from ..dcs.keys import Step
 from ..dcs.protocol import Armed, Arrived, Disarmed, Error, Hello, Message, Pong, State
+from ..dcs.speed import SpeedController
 from ..timefmt import fmt_model, fmt_speed, fmt_tod
 
 REFRESH_MS = 50
+SPEED_CHOICES = (0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16)
+LIMIT_CHOICES = (1, 2, 3, 4, 5, 6, 8, 10, 12, 16)
+DEFAULT_LIMIT = 4
+STEP_KEYS = {Step.UP: "LCtrl+Z", Step.DOWN: "LAlt+Z", Step.NORMAL: "LShift+Z"}
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, link: DcsLink) -> None:
+    def __init__(self, link: DcsLink, speed: SpeedController | None = None) -> None:
         super().__init__()
         self.link = link
+        self.speed = speed
         self.setWindowTitle("DCS Replay Helper")
 
         # connection
@@ -60,6 +68,36 @@ class MainWindow(QMainWindow):
         self.play_button.setMinimumHeight(40)
         self.play_button.clicked.connect(self._toggle_play)
 
+        # speed
+        self.speed_combo = QComboBox()
+        for x in SPEED_CHOICES:
+            self.speed_combo.addItem(fmt_speed(x), x)
+        self.speed_combo.setCurrentIndex(SPEED_CHOICES.index(1))
+        self.speed_button = QPushButton("Set speed")
+        self.speed_button.clicked.connect(self._set_speed)
+        self.limit_combo = QComboBox()
+        for x in LIMIT_CHOICES:
+            self.limit_combo.addItem(fmt_speed(x), x)
+        self.limit_combo.setCurrentIndex(LIMIT_CHOICES.index(DEFAULT_LIMIT))
+        self.limit_combo.setToolTip("Never run the replay faster than this. If it does (for example "
+                                    "after pressing the keys in DCS by hand), the replay is paused "
+                                    "and brought back down to this speed.")
+        self.limit_combo.currentIndexChanged.connect(self._apply_limit)
+        self.speed_status = QLabel()
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Speed"))
+        speed_row.addWidget(self.speed_combo)
+        speed_row.addWidget(self.speed_button)
+        speed_row.addSpacing(16)
+        speed_row.addWidget(QLabel("Limit"))
+        speed_row.addWidget(self.limit_combo)
+        speed_row.addStretch(1)
+        speed_box = QGroupBox("Speed")
+        speed_layout = QVBoxLayout(speed_box)
+        speed_layout.addLayout(speed_row)
+        speed_layout.addWidget(self.speed_status)
+        speed_box.setEnabled(speed is not None)
+
         # manual stop
         self.stop_spin = QDoubleSpinBox()
         self.stop_spin.setRange(0.0, 24 * 3600.0)
@@ -89,16 +127,24 @@ class MainWindow(QMainWindow):
         root.addLayout(top)
         root.addLayout(clock_box)
         root.addWidget(self.play_button)
+        root.addWidget(speed_box)
         root.addWidget(stop_box)
         root.addWidget(self.log_view, 1)
         central = QWidget()
         central.setLayout(root)
         self.setCentralWidget(central)
-        self.resize(520, 480)
+        self.resize(560, 560)
 
         link.connectedChanged.connect(self._on_connected)
         link.stateChanged.connect(self._on_state)
         link.message.connect(self._on_message)
+        if speed is not None:
+            speed.busyChanged.connect(self._on_speed_busy)
+            speed.stepped.connect(self._on_speed_step)
+            speed.reached.connect(self._on_speed_reached)
+            speed.failed.connect(self._on_speed_failed)
+            speed.overspeed.connect(self._on_overspeed)
+            self._apply_limit()
 
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
@@ -117,6 +163,44 @@ class MainWindow(QMainWindow):
         else:
             self.link.pause()
 
+    def _limit(self) -> float:
+        return float(self.limit_combo.currentData())
+
+    def _apply_limit(self) -> None:
+        if self.speed is not None:
+            self.speed.max_speed = self._limit()
+
+    def _set_speed(self) -> None:
+        if self.speed is None:
+            return
+        target = float(self.speed_combo.currentData())
+        if target > self._limit():
+            self._log(f"{fmt_speed(target)} is above the limit; using {fmt_speed(self._limit())}")
+            target = self._limit()
+        self.speed.set_target(target)
+
+    # --- speed events -----------------------------------------------------------------
+    def _on_speed_busy(self, busy: bool) -> None:
+        self.speed_button.setEnabled(not busy and self.link.connected)
+        if busy and self.speed.target is not None:
+            self.speed_status.setStyleSheet("")
+            self.speed_status.setText(f"Setting {fmt_speed(self.speed.target)}…")
+
+    def _on_speed_step(self, step: Step, before: float) -> None:
+        self._log(f"speed key {STEP_KEYS[step]} (at {fmt_speed(before)})")
+
+    def _on_speed_reached(self, target: float) -> None:
+        self.speed_status.setStyleSheet("")
+        self.speed_status.setText(f"Speed set to {fmt_speed(target)}")
+
+    def _on_speed_failed(self, message: str) -> None:
+        self.speed_status.setStyleSheet("color: #c62828;")
+        self.speed_status.setText(f"Speed not set: {message}")
+        self._log(f"speed: {message}")
+
+    def _on_overspeed(self, rate: float) -> None:
+        self._log(f"replay ran at {fmt_speed(rate)}, above the {fmt_speed(self._limit())} limit: paused")
+
     def _set_play_button(self, paused: bool) -> None:
         # Standard icons instead of ▶/⏸ characters, which some fonts lack.
         icon = QStyle.StandardPixmap.SP_MediaPlay if paused else QStyle.StandardPixmap.SP_MediaPause
@@ -134,6 +218,7 @@ class MainWindow(QMainWindow):
             self.conn_label.setStyleSheet("color: #9e9e9e;")
         for w in (self.play_button, self.arm_button, self.disarm_button):
             w.setEnabled(connected)
+        self.speed_button.setEnabled(connected and not (self.speed and self.speed.busy))
 
     def _on_state(self, s: State) -> None:
         parts = [p for p in (s.theatre, s.date) if p]
