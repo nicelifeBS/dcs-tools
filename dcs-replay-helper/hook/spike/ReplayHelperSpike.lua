@@ -17,8 +17,12 @@
 --   DISARM                   forget the armed stop
 --   PROBE                    report which APIs, globals and Lua states are reachable
 --   FINDCMDS [subdir]        scan the DCS install for time-acceleration iCommand ids
---   LOCMD <id> [value]       call LoSetCommand from this (hooks) state
+--   LOCMD <id> [value]       call Export.LoSetCommand from this (hooks) state; reports the
+--                            commanded and measured speed again 0.6 s later (LOCMD-AFTER)
 --   LOCMDX <id> [value]      call LoSetCommand inside the export state via net.dostring_in
+--
+-- STATE carries both the measured speed (speed=, model/real time ratio) and the speed DCS
+-- says it is commanding (accel=, Export.LoGetModelTimeAcceleration).
 --
 -- Safety: this runs inside DCS's GUI state. Any error at file scope would silently drop the
 -- whole hook, and an error in a callback can break the menus, so every DCS call is pcall'd
@@ -26,7 +30,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "spike-1"
+local VERSION = "spike-2"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> client
@@ -36,6 +40,7 @@ local STATE_INTERVAL     = 0.1    -- real seconds between STATE packets
 local SPEED_WINDOW       = 0.5    -- real seconds per speed sample
 local STOPPED_RATIO      = 0.004  -- below this the sim is paused, not in slow motion (1/64x = 0.0156)
 local MAX_CMDS_PER_FRAME = 16
+local AFTER_DELAY        = 0.6    -- real seconds before LOCMD reports its effect
 
 -- -------------------------------------------------------------------------------------
 -- helpers
@@ -72,6 +77,15 @@ local function install_root()
     if type(lfs) == "table" then root = call(lfs.currentdir) or "." end
     if not root:match("[/\\]$") then root = root .. "\\" end
     return root
+end
+
+-- Export functions are reachable from the hooks state as Export.Lo*, not as bare globals.
+local function resolve_lo(name)
+    if type(_G[name]) == "function" then return _G[name], "_G" end
+    if type(_G.Export) == "table" and type(_G.Export[name]) == "function" then
+        return _G.Export[name], "Export"
+    end
+    return nil
 end
 
 -- -------------------------------------------------------------------------------------
@@ -149,6 +163,13 @@ local sim = {
 }
 
 local stop = { target = nil }
+local after = { at_rt = nil, label = nil }   -- pending LOCMD-AFTER report
+
+local function commanded_accel()
+    local f = resolve_lo("LoGetModelTimeAcceleration")
+    local v = call(f)
+    return type(v) == "number" and v or -1
+end
 
 local function model_time()
     return call(dcs_fn("getModelTime"))
@@ -173,6 +194,7 @@ local function reset_sim()
     sim.raw, sim.speed = nil, nil
     sim.next_state_rt = 0
     stop.target = nil
+    after.at_rt, after.label = nil, nil
 end
 
 -- Speed is measured, never inferred from the keys or commands we sent.
@@ -204,8 +226,8 @@ local function check_stop(m)
         local target = stop.target
         stop.target = nil
         call(dcs_fn("setPause"), true)
-        report(string.format("ARRIVED t=%.3f target=%.3f over=%.3f speed=%.3f",
-            m, target, m - target, sim.speed or -1))
+        report(string.format("ARRIVED t=%.3f target=%.3f over=%.3f speed=%.3f accel=%.3f",
+            m, target, m - target, sim.speed or -1, commanded_accel()))
     end
 end
 
@@ -239,14 +261,6 @@ local function report_list(prefix, names)
     end
 end
 
-local function resolve_lo(name)
-    if type(_G[name]) == "function" then return _G[name], "_G" end
-    if type(_G.Export) == "table" and type(_G.Export[name]) == "function" then
-        return _G.Export[name], "Export"
-    end
-    return nil
-end
-
 local function dostring_in(state, code)
     if type(net) ~= "table" or type(net.dostring_in) ~= "function" then
         return nil, "net.dostring_in unavailable"
@@ -274,8 +288,8 @@ local function probe()
     end
     report_list("PROBE _G.Lo*", lo)
 
-    report(string.format("PROBE clock model=%s real=%s paused=%s track=%s multiplayer=%s",
-        tostring(model_time()), tostring(call(dcs_fn("getRealTime"))),
+    report(string.format("PROBE clock model=%s real=%s accel=%s paused=%s track=%s multiplayer=%s",
+        tostring(model_time()), tostring(call(dcs_fn("getRealTime"))), tostring(commanded_accel()),
         tostring(call(dcs_fn("getPause"))), tostring(call(dcs_fn("isTrackPlaying"))),
         tostring(call(dcs_fn("isMultiplayer")))))
     report("PROBE mission name=" .. oneline(call(dcs_fn("getMissionName")))
@@ -439,10 +453,13 @@ handlers.LOCMD = function(arg)
         report("LOCMD unavailable: no LoSetCommand in the hooks state (try LOCMDX)")
         return
     end
+    local accel_before = commanded_accel()
     local ok, err
     if value then ok, err = pcall(f, id, value) else ok, err = pcall(f, id) end
-    report(string.format("LOCMD id=%d value=%s via=%s ok=%s err=%s speed_before=%.3f",
-        id, tostring(value), where, tostring(ok), oneline(err), sim.speed or -1))
+    report(string.format("LOCMD id=%d value=%s via=%s ok=%s err=%s accel_before=%.3f speed_before=%.3f",
+        id, tostring(value), where, tostring(ok), oneline(err), accel_before, sim.speed or -1))
+    after.at_rt = (call(dcs_fn("getRealTime")) or 0) + AFTER_DELAY
+    after.label = string.format("id=%d", id)
 end
 
 handlers.LOCMDX = function(arg)
@@ -455,9 +472,12 @@ handlers.LOCMDX = function(arg)
     local code = "if type(LoSetCommand) ~= 'function' then return 'no LoSetCommand' end "
         .. "local ok, err = pcall(LoSetCommand, " .. args .. ") "
         .. "return 'ok=' .. tostring(ok) .. ' err=' .. tostring(err)"
+    local accel_before = commanded_accel()
     local res, extra = dostring_in("export", code)
-    report(string.format("LOCMDX id=%d value=%s -> %s | %s speed_before=%.3f",
-        id, tostring(value), oneline(res), oneline(extra), sim.speed or -1))
+    report(string.format("LOCMDX id=%d value=%s -> %s | %s accel_before=%.3f speed_before=%.3f",
+        id, tostring(value), oneline(res), oneline(extra), accel_before, sim.speed or -1))
+    after.at_rt = (call(dcs_fn("getRealTime")) or 0) + AFTER_DELAY
+    after.label = string.format("x id=%d", id)
 end
 
 local function dispatch(line)
@@ -504,11 +524,20 @@ local function on_frame()
     if type(r) ~= "number" then return end
     measure(m, r)
 
+    if after.at_rt and r >= after.at_rt then
+        -- The measured speed needs a full sample window at the new rate to settle, so raw is
+        -- the quicker signal here; accel is what DCS says it is commanding.
+        report(string.format("LOCMD-AFTER %s accel=%.3f speed=%.3f raw=%.3f paused=%s",
+            after.label, commanded_accel(), sim.speed or -1, sim.raw or -1,
+            tostring(call(dcs_fn("getPause")))))
+        after.at_rt, after.label = nil, nil
+    end
+
     if r >= sim.next_state_rt then
         sim.next_state_rt = r + STATE_INTERVAL
         send(string.format(
-            "STATE t=%.3f rt=%.3f speed=%.3f raw=%.3f paused=%s track=%s stop=%.3f start_tod=%s date=%s",
-            m, r, sim.speed or -1, sim.raw or -1,
+            "STATE t=%.3f rt=%.3f speed=%.3f raw=%.3f accel=%.3f paused=%s track=%s stop=%.3f start_tod=%s date=%s",
+            m, r, sim.speed or -1, sim.raw or -1, commanded_accel(),
             tostring(call(dcs_fn("getPause"))), tostring(call(dcs_fn("isTrackPlaying"))),
             stop.target or -1, tostring(sim.start_tod), tostring(sim.date)))
     end

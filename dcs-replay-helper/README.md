@@ -15,7 +15,7 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 ## Layout
 
 ```
-hook/spike/ReplayHelperSpike.lua   # throwaway probe hook (milestone 0)
+hook/spike/ReplayHelperSpike.lua   # throwaway probe hook (milestone 0, spike-2)
 tools/spike_client.py              # console client for the spike (stdlib only)
 tests/test_spike_hook.py           # runs the hook in Lua 5.1 (lupa) against a mocked DCS
 ```

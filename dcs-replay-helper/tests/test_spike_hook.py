@@ -100,7 +100,7 @@ def hook() -> Hook:
 
 
 def test_loads_and_registers_callbacks(hook: Hook) -> None:
-    assert any("loaded spike-1 (callbacks registered)" in line for line in hook.logs())
+    assert any("loaded spike-2 (callbacks registered)" in line for line in hook.logs())
 
 
 def test_silent_outside_a_mission(hook: Hook) -> None:
@@ -110,7 +110,7 @@ def test_silent_outside_a_mission(hook: Hook) -> None:
 
 def test_state_after_mission_load(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.sent()[0] == "HELLO spike-1"
+    assert hook.sent()[0] == "HELLO spike-2"
     hook.run(0.5)
     state = hook.last_state()
     assert state["start_tod"] == "59400"
@@ -121,7 +121,7 @@ def test_state_after_mission_load(hook: Hook) -> None:
 
 def test_ping(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.cmd("PING") == ["PONG spike-1"]
+    assert hook.cmd("PING") == ["PONG spike-2"]
 
 
 def test_pause_resume(hook: Hook) -> None:
@@ -173,7 +173,7 @@ def test_disarm(hook: Hook) -> None:
 def test_probe_survives_minimal_environment(hook: Hook) -> None:
     hook.load_mission()
     replies = hook.cmd("PROBE")
-    assert replies[0] == "PROBE begin spike-1"
+    assert replies[0] == "PROBE begin spike-2"
     assert replies[-1] == "PROBE end"
     assert "PROBE mission start_time=59400 date=2018-02-01 theatre=Caucasus" in replies
     assert "PROBE global LoSetCommand nil" in replies
@@ -189,7 +189,30 @@ def test_locmd_calls_export_function(hook: Hook) -> None:
     hook.load_mission()
     reply = hook.cmd("LOCMD 52")[0]
     assert "via=Export ok=true" in reply
+    assert "accel_before=-1.000" in reply  # no LoGetModelTimeAcceleration in this mock
     assert hook.mock.locmd[1] == 52
+
+
+def test_state_and_locmd_report_commanded_accel(hook: Hook) -> None:
+    # A mock DCS where accelerate (id 52) doubles the commanded rate the clock runs at.
+    hook.lua.execute("""
+        MOCK.accel = 1
+        Export = {
+            LoSetCommand = function(id) if id == 52 then MOCK.accel = MOCK.accel * 2 end end,
+            LoGetModelTimeAcceleration = function() return MOCK.accel end,
+        }
+    """)
+    hook.load_mission()
+    hook.run(1.0)
+    assert hook.last_state()["accel"] == "1.000"
+
+    assert "accel_before=1.000" in hook.cmd("LOCMD 52")[0]
+    hook.clear()
+    hook.run(1.0, speed=2.0)
+    after = [s for s in hook.sent() if s.startswith("LOCMD-AFTER ")]
+    assert len(after) == 1
+    assert after[0].startswith("LOCMD-AFTER id=52 accel=2.000")
+    assert hook.last_state()["accel"] == "2.000"
 
 
 def test_locmdx_reports_missing_net(hook: Hook) -> None:

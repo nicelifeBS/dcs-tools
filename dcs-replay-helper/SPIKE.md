@@ -13,11 +13,28 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 
 1. Copy `hook/spike/ReplayHelperSpike.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`. Create the `Hooks` folder if it doesn't exist, and use `DCS.openbeta` instead of `DCS` if that's your Saved Games folder.
 2. Start DCS. `Saved Games\DCS\Logs\dcs.log` should contain:
-   `REPLAYHELPER (Main): loaded spike-1 (callbacks registered)`
+   `REPLAYHELPER (Main): loaded spike-2 (callbacks registered)`
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
-4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-1`. Typing `s` then shows the live `STATE` line.
+4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-2`. Typing `s` then shows the live `STATE` line.
 
-## Tests
+## Round 2: speed above 1x (current)
+
+Round 1 confirmed pause/resume, the clock, the mission start time and a stop at 1x landing within 0.002 s. Keystrokes could slow the replay down and bring it back to 1x, but **nothing ever went above 1x**, and `find` / `cmd` were never run. The probe showed that `Export.LoSetCommand` and `Export.LoGetModelTimeAcceleration` are reachable from the hook, so the hook may be able to change speed itself, with no window focus needed.
+
+`spike-2` adds `accel=` to every STATE line: the speed DCS says it is commanding, next to the measured `speed=`. After each `cmd`, it prints a `LOCMD-AFTER` line about half a second later showing the effect.
+
+Replace the hook file in `Scripts\Hooks` with the new `ReplayHelperSpike.lua`, then restart DCS and play `LastMissionTrack.trk` again.
+
+| # | Do | Look for |
+|---|----|----------|
+| 1 | `p`, then `find`, then `r` | `CMDID iCommand…=<number>` lines. Note the numbers for accelerate, decelerate and normal speed (no acceleration). If no line has a number, try `find Mods` instead. |
+| 2 | `cmd <accelerate id>`, wait 2 s, then run it again | `LOCMD-AFTER … accel=2.000`, then `accel=4.000`. Type `s` to see whether the measured `speed=` follows. |
+| 3 | `cmd <normal id>` | `accel=1.000`. |
+| 4 | Only if `cmd` did nothing: `key up`, twice | Whether keystrokes can get above 1x, now that `accel=` shows it directly. |
+| 5 | `s` to read `t=`, then `arm <t + 30>`, then speed up to 4x with whatever worked in 2 or 4 | `ARRIVED … over=…` with `over` below about 0.1, and DCS paused. |
+| 6 | `q` | Upload `spike_session.log`. |
+
+## Round 1 tests (done)
 
 Type these at the client's `>` prompt. Results print as they arrive and are saved to the session log.
 
