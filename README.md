@@ -54,6 +54,11 @@ Monitors a directory for PNG files and automatically converts them to DDS format
 python scripts/watch_and_convert.py /path/to/pngs /path/to/dds
 ```
 
+### 4. DCS Replay Helper (`dcs-replay-helper/`)
+A desktop app that drives a running DCS track replay from bookmarks you set in Tacview. It jumps forward under a speed cap, and pauses with a pre-roll before the event and an optional post-roll after it. That makes it easy to line up shots for recording.
+
+See [dcs-replay-helper/README.md](dcs-replay-helper/README.md).
+
 ## Installation
 
 ### Prerequisites

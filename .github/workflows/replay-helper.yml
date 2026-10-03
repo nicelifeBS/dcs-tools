@@ -1,0 +1,38 @@
+name: DCS Replay Helper
+
+on:
+  push:
+    paths: ["dcs-replay-helper/**", ".github/workflows/replay-helper.yml"]
+  pull_request:
+    paths: ["dcs-replay-helper/**", ".github/workflows/replay-helper.yml"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: dcs-replay-helper
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1
+      - run: uv run pytest -q
+
+  windows-exe:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run pytest -q
+      - run: uv run --group build pyinstaller --noconfirm replay_helper.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DCSReplayHelper
+          path: dcs-replay-helper/dist/DCSReplayHelper.exe
