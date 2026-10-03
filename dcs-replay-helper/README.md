@@ -12,7 +12,7 @@ DCS gives Lua no way to set time acceleration. So the app presses DCS's own keys
 
 ## Install
 
-1. Get `DCSReplayHelper.exe`. Download it from this repository's **Actions** tab (the *DCS Replay Helper* workflow → *DCSReplayHelper* artifact), or build it yourself (see Development).
+1. Download `DCSReplayHelper.exe` from this repository's [Releases](https://github.com/nicelifeBS/dcs-tools/releases) (tags `replay-helper-v*`), or build it yourself (see Development).
 2. Run it and choose **Tools → Install / update DCS hook…**.
    - The app finds your `Saved Games\DCS*` folders and puts `ReplayHelper.lua` into `Scripts\Hooks`. Nothing is written to the DCS install folder.
    - It also removes the old spike hook, `ReplayHelperSpike.lua`, if it's there, because the two would clash.
@@ -58,7 +58,7 @@ DCS gives Lua no way to set time acceleration. So the app presses DCS's own keys
 
 ```
 cd dcs-replay-helper
-uv run pytest                                          # 236 tests: hook (Lua 5.1 via lupa), protocol, link,
+uv run pytest                                          # 237 tests: hook (Lua 5.1 via lupa), protocol, link,
                                                        # speed, seek, Tacview, time sync, installer, window
 uv run python tools/fake_dcs.py                        # a stand-in for DCS + hook, on the same ports
 uv run replay-helper                                   # the app, in a second terminal
@@ -70,6 +70,7 @@ The fake DCS simulates the replay clock, pause and stop. In place of keystrokes 
 The window tests run headless (`QT_QPA_PLATFORM=offscreen`). They skip on Linux machines without `libEGL`.
 
 The GitHub workflow `.github/workflows/replay-helper.yml` runs the tests on Linux and Windows and builds the exe.
+To release, put the notes in `release-notes/<version>.md`, set `__version__` in `src/replay_helper/__init__.py`, and run *DCS Replay Helper release* from the Actions tab with that version. It publishes the exe as the release's only file, tagged `replay-helper-v<version>`.
 
 ## Layout
 
