@@ -320,3 +320,18 @@ def test_digital_dispatch(hook: Hook) -> None:
 def test_digital_unavailable(hook: Hook) -> None:
     hook.load_mission()
     assert hook.cmd("DIGITAL 52")[0] == "DIGITAL unavailable: no DCS.dispatchDigitalAction"
+
+
+@pytest.mark.parametrize("arg", ["0000022317A6DEA0", "52abc", "52 1 2", "52 x", "abc"])
+def test_command_ids_must_be_whole_numbers(hook: Hook, arg: str) -> None:
+    hook.lua.execute("Export = { LoSetCommand = function(id) MOCK.locmd = id end }")
+    hook.load_mission()
+    assert hook.cmd("LOCMD " + arg) == ["ERR LOCMD needs a command id"]
+    assert hook.mock.locmd is None
+
+
+def test_command_value_is_optional_number(hook: Hook) -> None:
+    hook.lua.execute("Export = { LoSetCommand = function(id, v) MOCK.locmd = { id, v } end }")
+    hook.load_mission()
+    assert "ok=true" in hook.cmd("LOCMD 52 0.25")[0]
+    assert hook.mock.locmd[1] == 52 and hook.mock.locmd[2] == 0.25

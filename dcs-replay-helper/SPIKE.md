@@ -17,7 +17,17 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
 4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-3`. Typing `s` then shows the live `STATE` line.
 
-## Round 3: find the command ids, then get above 1x (current)
+## Results (spike finished)
+
+- **Speed control is keystrokes.** `LCtrl+Z`, `LAlt+Z` and `LShift+Z` are sent as scan codes to the focused DCS window. They work during playback, including while paused.
+  - Above 1x, each `LCtrl+Z` adds 1x: 1 → 2 → 3 → 4. Below 1x, `LAlt+Z` halves the speed (0.5, 0.25). `LShift+Z` returns to 1x.
+  - `Export.LoGetModelTimeAcceleration()` (`accel=`) reports the new speed immediately, even while paused.
+- **No scripted speed command.** The `iCommand*` ids for time acceleration aren't reachable from any Lua state, so `LoSetCommand` / `dispatchDigitalAction` can't be used.
+- **Pause and resume** from the hook work. The speed is kept through a pause.
+- **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
+- **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
+
+## Round 3: find the command ids, then get above 1x (done)
 
 Round 2's `find` showed that the three time-acceleration commands (`iCommandAccelerate`, `iCommandDecelerate`, `iCommandNoAcceleration`) are bound in `Config\Input\UiLayer\joystick\default.lua`, but no Lua file assigns them numbers. DCS supplies the numbers itself as Lua globals, so `spike-3` looks for them in each Lua state instead of in files.
 

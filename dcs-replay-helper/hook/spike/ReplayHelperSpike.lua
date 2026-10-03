@@ -460,8 +460,14 @@ end
 -- -------------------------------------------------------------------------------------
 -- commands
 -- -------------------------------------------------------------------------------------
+-- "<id>" or "<id> <value>", nothing else. A loose match once turned the memory address
+-- 0000022317A6DEA0 into command 22317 and sent it to DCS.
 local function parse_cmd_args(arg)
-    local id, value = arg:match("^(%-?%d+)%s*(%S*)$")
+    local id, rest = arg:match("^(%-?%d+)(.*)$")
+    if not id then return nil end
+    if rest:match("^%s*$") then return tonumber(id), nil end
+    local value = rest:match("^%s+(%-?%d+%.?%d*)%s*$")
+    if not value then return nil end
     return tonumber(id), tonumber(value)
 end
 
