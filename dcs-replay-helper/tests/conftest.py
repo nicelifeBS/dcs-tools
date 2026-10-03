@@ -13,6 +13,12 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+
+@pytest.fixture(autouse=True)
+def _isolated_config(tmp_path, monkeypatch):
+    """Settings written by the code under test go to a temporary folder, not the user's."""
+    monkeypatch.setenv("REPLAY_HELPER_CONFIG_DIR", str(tmp_path / "config"))
+
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
 

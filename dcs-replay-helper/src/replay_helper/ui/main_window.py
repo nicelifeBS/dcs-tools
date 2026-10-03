@@ -27,6 +27,7 @@ from ..dcs.link import DcsLink
 from ..dcs.protocol import Arrived, Disarmed, Error, Hello, Message, Pong, State
 from ..dcs.speed import SpeedController
 from ..seek import Phase, SeekController, SeekError
+from ..settings import Settings
 from ..tacview.events import Event
 from ..timefmt import fmt_model, fmt_speed, fmt_tod, parse_clock, tod_to_model
 from .event_table import EventPanel
@@ -43,7 +44,7 @@ ERROR_STYLE = "color: #c62828;"
 
 class MainWindow(QMainWindow):
     def __init__(self, link: DcsLink, speed: SpeedController | None = None,
-                 seek: SeekController | None = None) -> None:
+                 seek: SeekController | None = None, settings: Settings | None = None) -> None:
         super().__init__()
         self.link = link
         self.speed = speed
@@ -163,8 +164,9 @@ class MainWindow(QMainWindow):
         self.log_view.setMaximumBlockCount(500)
 
         # Tacview events
-        self.events = EventPanel()
+        self.events = EventPanel(settings)
         self.events.seekRequested.connect(self._seek_event)
+        self.events.synced.connect(self._log)
 
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
@@ -415,7 +417,9 @@ class MainWindow(QMainWindow):
         s = self.link.state
         t = self.link.model_time_now() if self.link.connected else None
         self.clock_label.setText(fmt_model(t))
-        self.events.set_now(t, self.preroll_spin.value(), s.start_tod if s is not None else None)
+        connected = s is not None and self.link.connected
+        self.events.set_now(t, self.preroll_spin.value(), s.start_tod if connected else None,
+                            s.date if connected else None)
         if s is None or not self.link.connected:
             self.tod_label.setText("Mission time --:--:--")
             self.speed_label.setText("")

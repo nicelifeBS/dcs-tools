@@ -10,6 +10,7 @@ from .dcs import protocol
 from .dcs.link import DcsLink
 from .dcs.speed import AutoKeyBackend, SpeedController
 from .seek import SeekController
+from .settings import Settings
 from .ui.main_window import MainWindow
 
 
@@ -27,11 +28,14 @@ def main() -> int:
         return 1
     speed = SpeedController(link, AutoKeyBackend(link))
     seek = SeekController(link, speed)
-    window = MainWindow(link, speed, seek)
+    window = MainWindow(link, speed, seek, Settings())
     window.show()
-    acmi = [arg for arg in sys.argv[1:] if arg.lower().endswith(".acmi")]
-    if acmi:
-        window.load_acmi(acmi[0])  # replay-helper path/to/recording.zip.acmi
+    # replay-helper [recording.zip.acmi] [track.trk]
+    for arg in sys.argv[1:]:
+        if arg.lower().endswith(".acmi"):
+            window.load_acmi(arg)
+        elif arg.lower().endswith(".trk"):
+            window.events.load_track(arg)
     code = app.exec()
     speed.shutdown()
     link.stop()

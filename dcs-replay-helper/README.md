@@ -10,7 +10,7 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 
 ## Status
 
-**Milestone 4 of 6: Tacview events.**
+**Milestone 5 of 6: time sync.**
 - **Done:**
   - The window shows the connection, the model clock and mission time of day, and the commanded and measured speed. It has Play/Pause.
   - **Seek:** enter a target in replay time (`1:07.95`, `67.95`) or mission time (`16:31:07`), and set a pre-roll and an optional post-roll.
@@ -30,9 +30,16 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
     - Double-click an event, or select it and click **Go to event**, to seek there with the Seek panel's pre-roll and post-roll.
     - Events whose pre-roll point is already behind the replay are grayed out.
     - Large recordings load in the background: about 4 s for 200 MB of uncompressed data.
-- **Not built yet:** time sync (milestone 5).
-  - For now, Tacview time is taken as replay time. That holds when the Tacview recording started with the mission, as in `tests/data`.
-  - Milestone 5 adds the automatic time-zone offset, manual offsets and "sync to this event".
+  - **Time sync:** replay time = Tacview time + offset.
+    - Tacview counts from its ReferenceTime, which is UTC. DCS counts from mission start, which is local time on the map.
+    - The app works out the time zone by rounding the difference between the two start times to 15 minutes. For the sample that's UTC+4 on Caucasus, so the offset is 0.
+    - A recording started after the mission keeps the remainder as its offset.
+    - The mission start comes from DCS once connected. Before that, **Open track…** reads it from the `.trk` you are about to replay, along with the date, map and length.
+    - You can override the time zone, and add a fine adjustment in seconds.
+    - **Sync to selected event** sets the fine adjustment for you: pause DCS on the moment the selected event happens, then click.
+    - The offset is saved per recording.
+    - A Tacview date more than a day away from the mission date shows a warning.
+- **Not built yet:** hook installer, settings for the speed and roll defaults, and a packaged exe (milestone 6).
 
 ## Use with DCS
 
@@ -43,7 +50,8 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 3. Start the app from this folder with `uv run replay-helper`. On Windows `uv` picks up Python from the repo's `.python-version`.
 4. Play a track in DCS. The app connects within a second.
 5. Type a time under **Seek**, set the pre-roll and post-roll, and click **Go**. To change speed, the app brings the DCS window to the front to press the keys, so DCS must not be minimised.
-6. Or click **Open Tacview recording…** (or start the app with `uv run replay-helper path\to\recording.zip.acmi`) and double-click a bookmark.
+6. Or click **Open Tacview recording…** and double-click a bookmark. You can also start the app with the recording, and optionally its track: `uv run replay-helper recording.zip.acmi track.trk`.
+7. If an event lands early or late, pause DCS on the moment it happens, select it in the list, and click **Sync to selected event**.
 
 ## Development
 
@@ -68,12 +76,15 @@ src/replay_helper/
   dcs/link.py                      # Qt UDP link, connection watchdog, clock interpolation
   dcs/keys.py                      # LCtrl/LAlt/LShift+Z as scan codes to the DCS window (Windows)
   dcs/speed.py                     # closed-loop speed controller and speed limit
+  dcs/trk.py                       # mission start, date, map and length from a .trk
   seek.py                          # seek state machine: pause, speed, arm, run, slow, post-roll
   tacview/acmi.py                  # streaming ACMI 2.x reader (objects and events, no positions)
   tacview/events.py                # seekable events: bookmarks, launches, losses, ejections, ...
   ui/event_table.py                # event list: load, filter, gray out the past, pick
   ui/main_window.py                # main window
-  timefmt.py                       # time formatting
+  timefmt.py                       # time formatting and parsing
+  timesync.py                      # Tacview time -> replay time: auto time zone, fine, sync
+  settings.py                      # JSON settings (per-recording sync) in %APPDATA%
   app.py                           # entry point (replay-helper / python -m replay_helper)
 tools/fake_dcs.py                  # DCS + hook simulator for development
 tools/spike_client.py              # console client for the spike hook

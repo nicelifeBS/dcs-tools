@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import threading
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -18,7 +19,9 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -30,11 +33,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..dcs.trk import TrackError, TrackInfo, read_track
+from ..settings import Settings
 from ..tacview.acmi import AcmiError, AcmiFile, read_acmi
 from ..tacview.events import Event, Kind, build_events
 from ..timefmt import fmt_model, fmt_tod
+from ..timesync import SyncResult, SyncSettings, compute, fine_for_sync, fmt_tz
 
 PAST_COLOR = QColor("#9e9e9e")
+ERROR_STYLE = "color: #c62828;"
 MIN_LEAD_S = 0.2  # matches seek.MIN_LEAD_S: a pre-roll point closer than this is behind
 
 # Filter checkboxes: label, kinds, checked by default
@@ -70,6 +77,15 @@ class EventTableModel(QAbstractTableModel):
         self._times = [e.t + offset for e in self._events]
         self._past = 0
         self.endResetModel()
+
+    def set_offset(self, offset: float) -> None:
+        if offset == self.offset:
+            return
+        self.offset = offset
+        self._times = [e.t + offset for e in self._events]
+        self._past = 0  # recomputed on the next set_now
+        if self._events:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self._events) - 1, len(HEADERS) - 1))
 
     def event_at(self, row: int) -> Event:
         return self._events[row]
@@ -113,8 +129,7 @@ class EventTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
-        if self.is_past(index.row()):
-            return Qt.ItemFlag.NoItemFlags  # replays only run forward
+        # Past rows stay selectable (to sync on them) but cannot be sought to.
         return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
@@ -137,7 +152,7 @@ class EventTableModel(QAbstractTableModel):
             return QBrush(PAST_COLOR)
         elif role == Qt.ItemDataRole.ToolTipRole:
             if self.is_past(row):
-                return "Behind the replay: replays only run forward"
+                return "Behind the replay (replays only run forward); you can still sync on it"
             if col in (COL_LABEL, COL_UNITS):
                 return e.label if col == COL_LABEL else e.units
         elif role == Qt.ItemDataRole.UserRole:
@@ -202,10 +217,18 @@ class EventPanel(QWidget):
 
     seekRequested = Signal(object, float)  # Event, DCS replay time
     fileLoaded = Signal(object)  # AcmiFile
+    synced = Signal(str)  # a sentence for the log
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.settings = settings
         self.acmi: AcmiFile | None = None
+        self.track: TrackInfo | None = None
+        self.sync = SyncSettings()
+        self.result: SyncResult | None = None
+        self._now: float | None = None
+        self._dcs_start_tod: float | None = None
+        self._dcs_date: str | None = None
         self.model = EventTableModel(self)
         self.proxy = EventFilterProxy(self)
         self.proxy.setSourceModel(self.model)
@@ -256,6 +279,65 @@ class EventPanel(QWidget):
         self.go_button.setEnabled(False)
         self.go_enabled = True  # cleared by the window while a seek runs or DCS is away
 
+        # time sync
+        self.sync_info = QLabel()
+        self.sync_info.setWordWrap(True)
+        self.sync_warning = QLabel()
+        self.sync_warning.setWordWrap(True)
+        self.sync_warning.setStyleSheet(ERROR_STYLE)
+        self.sync_warning.setVisible(False)
+        self.tz_auto = QCheckBox("Auto time zone")
+        self.tz_auto.setChecked(True)
+        self.tz_auto.setToolTip("Tacview times are UTC; the mission clock is local time on the map. "
+                                "Auto takes the difference between the two start times, to 15 minutes.")
+        self.tz_auto.toggled.connect(self._tz_auto_toggled)
+        self.tz_spin = QDoubleSpinBox()
+        self.tz_spin.setRange(-12.0, 14.0)
+        self.tz_spin.setSingleStep(0.25)
+        self.tz_spin.setDecimals(2)
+        self.tz_spin.setPrefix("UTC ")
+        self.tz_spin.setSuffix(" h")
+        self.tz_spin.setEnabled(False)
+        self.tz_spin.valueChanged.connect(self._tz_changed)
+        self.fine_spin = QDoubleSpinBox()
+        self.fine_spin.setRange(-86400.0, 86400.0)
+        self.fine_spin.setDecimals(2)
+        self.fine_spin.setSingleStep(0.1)
+        self.fine_spin.setSuffix(" s")
+        self.fine_spin.setToolTip("Added to every Tacview time. Sync to selected event sets it for you.")
+        self.fine_spin.valueChanged.connect(self._fine_changed)
+        self.sync_button = QPushButton("Sync to selected event")
+        self.sync_button.setToolTip("Pause DCS exactly when the selected event happens, then click: "
+                                    "the fine adjustment is set so that event lands on the replay clock.")
+        self.sync_button.clicked.connect(self._sync_to_selected)
+        self.reset_button = QPushButton("Reset")
+        self.reset_button.clicked.connect(lambda: self._set_sync(SyncSettings()))
+        self.track_button = QPushButton("Open track…")
+        self.track_button.setToolTip("Read the mission start time from the .trk you are replaying, "
+                                     "to check the times before DCS runs.")
+        self.track_button.clicked.connect(self._browse_track)
+        self.track_label = QLabel()
+        self.track_label.setWordWrap(True)
+        tz_row = QHBoxLayout()
+        tz_row.addWidget(self.tz_auto)
+        tz_row.addWidget(self.tz_spin)
+        tz_row.addSpacing(12)
+        tz_row.addWidget(QLabel("Fine"))
+        tz_row.addWidget(self.fine_spin)
+        tz_row.addStretch(1)
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.sync_button)
+        button_row.addWidget(self.reset_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.track_button)
+        sync_box = QGroupBox("Time sync")
+        sync_layout = QVBoxLayout(sync_box)
+        sync_layout.addWidget(self.sync_info)
+        sync_layout.addLayout(tz_row)
+        sync_layout.addLayout(button_row)
+        sync_layout.addWidget(self.track_label)
+        sync_layout.addWidget(self.sync_warning)
+
         top = QHBoxLayout()
         top.addWidget(self.open_button)
         top.addWidget(self.file_label, 1)
@@ -266,6 +348,7 @@ class EventPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(top)
         layout.addWidget(self.progress)
+        layout.addWidget(sync_box)
         layout.addLayout(filter_row)
         layout.addWidget(self.search)
         layout.addWidget(self.table, 1)
@@ -290,6 +373,9 @@ class EventPanel(QWidget):
     def _on_loaded(self, f: AcmiFile, events: list[Event]) -> None:
         self.acmi = f
         self.model.set_events(events, offset=self.model.offset)
+        self.sync = self.settings.sync_for(f.path) if self.settings else SyncSettings()
+        self._show_sync_settings()
+        self._recompute()
         self._fit_columns()
         self.open_button.setEnabled(True)
         self.progress.setVisible(False)
@@ -330,6 +416,7 @@ class EventPanel(QWidget):
     def _update_go(self) -> None:
         row = self.selected_row()
         self.go_button.setEnabled(self.go_enabled and row is not None and not self.model.is_past(row))
+        self.sync_button.setEnabled(row is not None and self._now is not None)
 
     def set_go_enabled(self, enabled: bool) -> None:
         self.go_enabled = enabled
@@ -341,12 +428,125 @@ class EventPanel(QWidget):
             return
         self.seekRequested.emit(self.model.event_at(row), self.model.dcs_time(row))
 
-    def set_now(self, now: float | None, preroll: float, start_tod: float | None) -> None:
-        self.model.set_start_tod(start_tod)
+    def set_now(self, now: float | None, preroll: float, start_tod: float | None = None,
+                mission_date: str | None = None) -> None:
+        """Called by the window as the replay runs. None while DCS is not connected."""
+        if (start_tod, mission_date) != (self._dcs_start_tod, self._dcs_date):
+            self._dcs_start_tod, self._dcs_date = start_tod, mission_date
+            self._recompute()
+        had_now = self._now is not None
+        self._now = now
         before = self.model.past_count
         self.model.set_now(now, preroll)
-        if self.model.past_count != before:
-            row = self.selected_row()
-            if row is not None and self.model.is_past(row):
-                self.table.clearSelection()
+        if self.model.past_count != before or had_now != (now is not None):
             self._update_go()
+
+    # --- time sync --------------------------------------------------------------------
+    def _start_tod(self) -> tuple[float | None, str]:
+        if self._dcs_start_tod is not None:
+            return self._dcs_start_tod, "DCS"
+        if self.track is not None and self.track.start_tod is not None:
+            return self.track.start_tod, "track"
+        return None, ""
+
+    def _mission_date(self) -> date | None:
+        text = self._dcs_date or (self.track.date if self.track else None)
+        try:
+            return date.fromisoformat(text) if text else None
+        except ValueError:
+            return None
+
+    def _recompute(self) -> None:
+        start_tod, source = self._start_tod()
+        f = self.acmi
+        ref_tod = f.reference_tod if f else None
+        acmi_date = f.reference_time.date() if f and f.reference_time else None
+        self.result = r = compute(self.sync, ref_tod, start_tod, acmi_date, self._mission_date())
+        self.model.set_start_tod(start_tod)
+        self.model.set_offset(r.offset)
+
+        parts = []
+        if f is None:
+            parts.append("Open a recording to line its times up with the replay.")
+        else:
+            parts.append(f"Tacview starts {fmt_tod(ref_tod)} UTC" if ref_tod is not None
+                         else "Tacview has no reference time")
+            parts.append(f"mission starts {fmt_tod(start_tod)} (from {source})" if start_tod is not None
+                         else "mission start unknown: connect DCS or open the track")
+            if ref_tod is not None and start_tod is not None:
+                parts.append(f"time zone {fmt_tz(r.tz_minutes)}{' (auto)' if r.auto else ''}")
+            parts.append(f"replay time = Tacview time {r.offset:+.2f} s")
+        self.sync_info.setText(" · ".join(parts))
+        self.sync_warning.setText(r.warning or "")
+        self.sync_warning.setVisible(bool(r.warning))
+        if r.auto and r.tz_minutes is not None:
+            self.tz_spin.blockSignals(True)
+            self.tz_spin.setValue(r.tz_minutes / 60)
+            self.tz_spin.blockSignals(False)
+
+    def _show_sync_settings(self) -> None:
+        for w in (self.tz_auto, self.tz_spin, self.fine_spin):
+            w.blockSignals(True)
+        self.tz_auto.setChecked(self.sync.tz_minutes is None)
+        self.tz_spin.setEnabled(self.sync.tz_minutes is not None)
+        if self.sync.tz_minutes is not None:
+            self.tz_spin.setValue(self.sync.tz_minutes / 60)
+        self.fine_spin.setValue(self.sync.fine_s)
+        for w in (self.tz_auto, self.tz_spin, self.fine_spin):
+            w.blockSignals(False)
+
+    def _set_sync(self, sync: SyncSettings) -> None:
+        self.sync = sync
+        if self.settings is not None and self.acmi is not None:
+            self.settings.set_sync(self.acmi.path, sync)
+        self._show_sync_settings()
+        self._recompute()
+
+    def _tz_auto_toggled(self, auto: bool) -> None:
+        if auto:
+            tz = None
+        else:
+            tz = self.result.tz_minutes if self.result and self.result.tz_minutes is not None else 0
+        self._set_sync(SyncSettings(tz, self.sync.fine_s))
+
+    def _tz_changed(self, hours: float) -> None:
+        if not self.tz_auto.isChecked():
+            self._set_sync(SyncSettings(int(round(hours * 4)) * 15, self.sync.fine_s))
+
+    def _fine_changed(self, seconds: float) -> None:
+        self._set_sync(SyncSettings(self.sync.tz_minutes, round(seconds, 2)))
+
+    def _sync_to_selected(self) -> None:
+        row = self.selected_row()
+        if row is None or self._now is None or self.acmi is None:
+            return
+        e = self.model.event_at(row)
+        start_tod, _ = self._start_tod()
+        fine = fine_for_sync(self.sync, self.acmi.reference_tod, start_tod, e.t, self._now)
+        self._set_sync(SyncSettings(self.sync.tz_minutes, round(fine, 2)))
+        self.synced.emit(f"synced '{e.label}' to {fmt_model(self._now)}: replay time = Tacview time "
+                         f"{self.result.offset:+.2f} s")
+
+    def _browse_track(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open the DCS track you are replaying", "",
+                                              "DCS tracks (*.trk);;All files (*)")
+        if path:
+            self.load_track(path)
+
+    def load_track(self, path: str | Path) -> None:
+        try:
+            self.track = read_track(path)
+        except TrackError as exc:
+            self.track_label.setStyleSheet(ERROR_STYLE)
+            self.track_label.setText(f"Could not read {Path(path).name}: {exc}")
+            return
+        t = self.track
+        bits = [p for p in (t.theatre, t.date) if p]
+        if t.start_tod is not None:
+            bits.append(f"starts {fmt_tod(t.start_tod)}")
+        if t.duration is not None:
+            bits.append(f"{fmt_model(t.duration)} long")
+        self.track_label.setStyleSheet("")
+        self.track_label.setText(f"Track {t.path.name}: " + ", ".join(bits))
+        self.track_label.setToolTip(str(t.path))
+        self._recompute()
