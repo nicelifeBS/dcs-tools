@@ -100,7 +100,7 @@ def hook() -> Hook:
 
 
 def test_loads_and_registers_callbacks(hook: Hook) -> None:
-    assert any("loaded spike-2 (callbacks registered)" in line for line in hook.logs())
+    assert any("loaded spike-3 (callbacks registered)" in line for line in hook.logs())
 
 
 def test_silent_outside_a_mission(hook: Hook) -> None:
@@ -110,7 +110,7 @@ def test_silent_outside_a_mission(hook: Hook) -> None:
 
 def test_state_after_mission_load(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.sent()[0] == "HELLO spike-2"
+    assert hook.sent()[0] == "HELLO spike-3"
     hook.run(0.5)
     state = hook.last_state()
     assert state["start_tod"] == "59400"
@@ -121,7 +121,7 @@ def test_state_after_mission_load(hook: Hook) -> None:
 
 def test_ping(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.cmd("PING") == ["PONG spike-2"]
+    assert hook.cmd("PING") == ["PONG spike-3"]
 
 
 def test_pause_resume(hook: Hook) -> None:
@@ -173,7 +173,7 @@ def test_disarm(hook: Hook) -> None:
 def test_probe_survives_minimal_environment(hook: Hook) -> None:
     hook.load_mission()
     replies = hook.cmd("PROBE")
-    assert replies[0] == "PROBE begin spike-2"
+    assert replies[0] == "PROBE begin spike-3"
     assert replies[-1] == "PROBE end"
     assert "PROBE mission start_time=59400 date=2018-02-01 theatre=Caucasus" in replies
     assert "PROBE global LoSetCommand nil" in replies
@@ -260,3 +260,63 @@ def test_findcmds_scans_install(hook: Hook, tmp_path: Path) -> None:
     assert "CMDID iCommandAccelerate=? file=Config\\Input\\keyboard.lua" in replies
     assert not any("iCommandPause" in r or "=99" in r for r in replies)
     assert replies[-1].startswith("FIND done: 2 lua files, 3 hits")
+
+
+def test_globals_finds_engine_ids_here_and_one_table_down(hook: Hook) -> None:
+    hook.lua.execute("""
+        iCommandAccelerate = 52
+        iCommandPause = 54
+        Input = { iCommandDecelerate = 53, iCommandNoAcceleration = 55 }
+    """)
+    hook.load_mission()
+    replies = hook.cmd("GLOBALS")
+    assert replies[0] == ("GLOBALS hooks Input.iCommandDecelerate=53 "
+                          "Input.iCommandNoAcceleration=55 iCommandAccelerate=52")
+    # The other Lua states are reached through net.dostring_in, which this mock lacks.
+    assert replies[1] == "GLOBALS config nil | net.dostring_in unavailable"
+    assert replies[-1] == "GLOBALS done"
+
+
+def test_globals_runs_the_same_scan_in_other_states(hook: Hook) -> None:
+    # net.dostring_in runs the code in a separate state; emulate one where the id is a global.
+    hook.lua.execute("""
+        net = { dostring_in = function(state, code)
+            local env = { pairs = pairs, ipairs = ipairs, type = type, tostring = tostring,
+                          pcall = pcall, table = table }
+            env._G = env
+            if state == "export" then env.iCommandAccelerate = 52 end
+            local f = assert(loadstring(code))
+            setfenv(f, env)
+            return f(), true
+        end }
+    """)
+    hook.load_mission()
+    replies = hook.cmd("GLOBALS accel")
+    assert "GLOBALS export iCommandAccelerate=52 | true" in replies
+    assert "GLOBALS mission (none) | true" in replies
+
+
+def test_globals_only_passes_words_into_generated_code(hook: Hook) -> None:
+    hook.lua.execute("MOCK.boom = false; iCommandAccelerate = 1")
+    hook.load_mission()
+    replies = hook.cmd("GLOBALS accel\") MOCK.boom = true --")
+    assert hook.mock.boom is False
+    # The payload is split into the plain words accel/mock/boom/true and searched for.
+    assert replies[0].startswith("GLOBALS hooks MOCK.boom=false")
+    assert "iCommandAccelerate=1" in replies[0]
+
+
+def test_digital_dispatch(hook: Hook) -> None:
+    hook.lua.execute("DCS.dispatchDigitalAction = function(id) MOCK.digital = id end")
+    hook.load_mission()
+    reply = hook.cmd("DIGITAL 52")[0]
+    assert reply.startswith("DIGITAL id=52 value=nil ok=true")
+    assert hook.mock.digital == 52
+    hook.clear()
+    hook.run(1.0)
+    assert any(s.startswith("LOCMD-AFTER digital id=52") for s in hook.sent())
+
+
+def test_digital_unavailable(hook: Hook) -> None:
+    hook.load_mission()
+    assert hook.cmd("DIGITAL 52")[0] == "DIGITAL unavailable: no DCS.dispatchDigitalAction"

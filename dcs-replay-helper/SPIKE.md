@@ -13,11 +13,25 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 
 1. Copy `hook/spike/ReplayHelperSpike.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`. Create the `Hooks` folder if it doesn't exist, and use `DCS.openbeta` instead of `DCS` if that's your Saved Games folder.
 2. Start DCS. `Saved Games\DCS\Logs\dcs.log` should contain:
-   `REPLAYHELPER (Main): loaded spike-2 (callbacks registered)`
+   `REPLAYHELPER (Main): loaded spike-3 (callbacks registered)`
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
-4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-2`. Typing `s` then shows the live `STATE` line.
+4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-3`. Typing `s` then shows the live `STATE` line.
 
-## Round 2: speed above 1x (current)
+## Round 3: find the command ids, then get above 1x (current)
+
+Round 2's `find` showed that the three time-acceleration commands (`iCommandAccelerate`, `iCommandDecelerate`, `iCommandNoAcceleration`) are bound in `Config\Input\UiLayer\joystick\default.lua`, but no Lua file assigns them numbers. DCS supplies the numbers itself as Lua globals, so `spike-3` looks for them in each Lua state instead of in files.
+
+Replace the hook in `Scripts\Hooks` with the new `ReplayHelperSpike.lua`, restart DCS, play `LastMissionTrack.trk`, and start the client.
+
+| # | Do | Look for |
+|---|----|----------|
+| 1 | `globals` | `GLOBALS <state> iCommandAccelerate=<n> …` in one of the lines (`hooks`, `config`, `mission`, `export`, `server`). If every line says `(none)`, try `globals icommand`. That lists every iCommand it can see, capped at 60. |
+| 2 | If you got numbers: `cmd <accelerate n>`, wait 2 s, then `cmd <accelerate n>` again | `LOCMD-AFTER … accel=2.000`, then `accel=4.000`. If nothing changes, try `digital <accelerate n>` twice the same way. Finish with `cmd <normal n>` or `digital <normal n>` for 1x. |
+| 3 | Either way: `key normal`, then `key up` three times | After each key, the client prints the STATE line. Check whether `accel=` goes 2 → 4 → 8. Click into DCS during the 3 s countdown if focusing fails. |
+| 4 | `key normal`, `s` to read `t=`, `arm <t + 40>`, then get to 4x with whatever worked in 2 or 3 | `ARRIVED … over=…` with `over` below about 0.1, and DCS paused. |
+| 5 | `q` | Upload `spike_session.log`. |
+
+## Round 2: speed above 1x (done: no numeric ids in Lua files)
 
 Round 1 confirmed pause/resume, the clock, the mission start time and a stop at 1x landing within 0.002 s. Keystrokes could slow the replay down and bring it back to 1x, but **nothing ever went above 1x**, and `find` / `cmd` were never run. The probe showed that `Export.LoSetCommand` and `Export.LoGetModelTimeAcceleration` are reachable from the hook, so the hook may be able to change speed itself, with no window focus needed.
 

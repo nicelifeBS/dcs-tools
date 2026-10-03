@@ -33,9 +33,13 @@ commands (case-insensitive):
   find [subdir]          search the DCS install for time-acceleration command ids
   cmd <id> [value]       LoSetCommand from the hooks state
   cmdx <id> [value]      LoSetCommand inside the export state
+  digital <id> [value]   DCS.dispatchDigitalAction
+  globals [words]        list globals named like the words (default: accel decel) in each
+                         Lua state -- this is where the iCommand ids come from
   key up|down|normal [count] [delay]
                          Windows only: send LCtrl+Z / LAlt+Z / LShift+Z to the DCS window.
-                         delay (default 3 s) gives you time to click into DCS if focusing fails
+                         delay (default 3 s) gives you time to click into DCS if focusing fails;
+                         the STATE line (with accel=) is shown about a second afterwards
   raw <line>             send a raw command line
   q                      quit
 """
@@ -153,7 +157,7 @@ def _focus_dcs() -> bool:
     return bool(user32.SetForegroundWindow(hwnd))
 
 
-def press_speed_key(which: str, count: int, delay: float, log: SessionLog) -> None:
+def press_speed_key(which: str, count: int, delay: float, client: Client) -> None:
     if sys.platform != "win32":
         print("  key injection only works on Windows")
         return
@@ -164,8 +168,10 @@ def press_speed_key(which: str, count: int, delay: float, log: SessionLog) -> No
     for _ in range(count):
         _send_scancodes([(modifier, False), (SCAN_Z, False), (SCAN_Z, True), (modifier, True)])
         time.sleep(0.6)  # leave a speed sample window between steps
-    log.write(f"## key {which} x{count} (focus {'ok' if focused else 'failed'})")
+    client.log.write(f"## key {which} x{count} (focus {'ok' if focused else 'failed'})")
     print(f"  sent {which} x{count}")
+    time.sleep(1.0)  # let the hook report the new rate
+    client.show_state()
 
 
 # --------------------------------------------------------------------------------------
@@ -193,12 +199,15 @@ def handle(client: Client, text: str) -> bool:
         client.send(f"ARM {args[0]}")
     elif word == "find":
         client.send("FINDCMDS " + " ".join(args))
-    elif word in ("cmd", "cmdx") and 1 <= len(args) <= 2:
-        client.send(("LOCMD " if word == "cmd" else "LOCMDX ") + " ".join(args))
+    elif word in ("cmd", "cmdx", "digital") and 1 <= len(args) <= 2:
+        prefix = {"cmd": "LOCMD", "cmdx": "LOCMDX", "digital": "DIGITAL"}[word]
+        client.send(f"{prefix} " + " ".join(args))
+    elif word == "globals":
+        client.send("GLOBALS " + " ".join(args))
     elif word == "key" and args and args[0] in SPEED_KEYS:
         count = int(args[1]) if len(args) > 1 else 1
         delay = float(args[2]) if len(args) > 2 else 3.0
-        press_speed_key(args[0], count, delay, client.log)
+        press_speed_key(args[0], count, delay, client)
     elif word == "raw" and args:
         client.send(" ".join(args))
     else:

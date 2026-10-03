@@ -20,6 +20,11 @@
 --   LOCMD <id> [value]       call Export.LoSetCommand from this (hooks) state; reports the
 --                            commanded and measured speed again 0.6 s later (LOCMD-AFTER)
 --   LOCMDX <id> [value]      call LoSetCommand inside the export state via net.dostring_in
+--   DIGITAL <id> [value]     call DCS.dispatchDigitalAction; reports like LOCMD
+--   GLOBALS [words]          list globals (and keys one table down) whose names contain any of
+--                            the words (default: accel decel), here and in the config, mission,
+--                            export and server states. The iCommand ids are engine-supplied
+--                            globals, not text in any Lua file, so this is how to find them.
 --
 -- STATE carries both the measured speed (speed=, model/real time ratio) and the speed DCS
 -- says it is commanding (accel=, Export.LoGetModelTimeAcceleration).
@@ -30,7 +35,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "spike-2"
+local VERSION = "spike-3"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> client
@@ -393,6 +398,66 @@ local function find_commands(subdir)
 end
 
 -- -------------------------------------------------------------------------------------
+-- global search
+-- -------------------------------------------------------------------------------------
+-- %s is replaced with the quoted, lower-case search words. Kept self-contained so the same
+-- source runs in this state and, through net.dostring_in, in the others.
+local GLOBAL_SCAN = [[
+local words = { %s }
+local hits, seen = {}, {}
+local function wanted(k)
+    if type(k) ~= "string" then return false end
+    local l = k:lower()
+    for _, w in ipairs(words) do
+        if l:find(w, 1, true) then return true end
+    end
+    return false
+end
+local function add(name, v)
+    local s = name .. "=" .. tostring(v)
+    if not seen[s] and #hits < 60 then
+        seen[s] = true
+        hits[#hits + 1] = s
+    end
+end
+for k, v in pairs(_G) do
+    if wanted(k) then add(tostring(k), v) end
+    if type(k) == "string" and type(v) == "table" and v ~= _G then
+        pcall(function()
+            for k2, v2 in pairs(v) do
+                if wanted(k2) then add(k .. "." .. k2, v2) end
+            end
+        end)
+    end
+end
+if #hits == 0 then return "(none)" end
+table.sort(hits)
+return table.concat(hits, " ")
+]]
+
+local function find_globals(arg)
+    -- Only plain words reach the generated code: anything else is a separator.
+    local words = {}
+    for w in tostring(arg or ""):lower():gmatch("[%w_]+") do words[#words + 1] = string.format("%q", w) end
+    if #words == 0 then words = { '"accel"', '"decel"' } end
+    local code = string.format(GLOBAL_SCAN, table.concat(words, ", "))
+
+    local loader = loadstring or load
+    local chunk, cerr = loader(code)
+    if chunk then
+        local ok, res = pcall(chunk)
+        report("GLOBALS hooks " .. oneline(ok and res or ("error: " .. tostring(res))))
+    else
+        report("GLOBALS hooks compile error: " .. oneline(cerr))
+    end
+    for _, state in ipairs({ "config", "mission", "export", "server" }) do
+        local res, extra = dostring_in(state, code)
+        report(string.format("GLOBALS %s %s | %s", state, oneline(res), oneline(extra)))
+    end
+    report("GLOBALS done")
+end
+
+-- -------------------------------------------------------------------------------------
 -- commands
 -- -------------------------------------------------------------------------------------
 local function parse_cmd_args(arg)
@@ -478,6 +543,30 @@ handlers.LOCMDX = function(arg)
         id, tostring(value), oneline(res), oneline(extra), accel_before, sim.speed or -1))
     after.at_rt = (call(dcs_fn("getRealTime")) or 0) + AFTER_DELAY
     after.label = string.format("x id=%d", id)
+end
+
+handlers.DIGITAL = function(arg)
+    local id, value = parse_cmd_args(arg)
+    if not id then
+        send("ERR DIGITAL needs a command id")
+        return
+    end
+    local f = dcs_fn("dispatchDigitalAction")
+    if type(f) ~= "function" then
+        report("DIGITAL unavailable: no DCS.dispatchDigitalAction")
+        return
+    end
+    local accel_before = commanded_accel()
+    local ok, err
+    if value then ok, err = pcall(f, id, value) else ok, err = pcall(f, id) end
+    report(string.format("DIGITAL id=%d value=%s ok=%s err=%s accel_before=%.3f speed_before=%.3f",
+        id, tostring(value), tostring(ok), oneline(err), accel_before, sim.speed or -1))
+    after.at_rt = (call(dcs_fn("getRealTime")) or 0) + AFTER_DELAY
+    after.label = string.format("digital id=%d", id)
+end
+
+handlers.GLOBALS = function(arg)
+    find_globals(arg)
 end
 
 local function dispatch(line)
