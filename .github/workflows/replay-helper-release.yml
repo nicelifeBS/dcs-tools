@@ -1,0 +1,46 @@
+name: DCS Replay Helper release
+
+# Run by hand (Actions > DCS Replay Helper release > Run workflow). Builds the exe on Windows
+# and publishes it as the only file of a release tagged replay-helper-v<version>, with the notes
+# from dcs-replay-helper/release-notes/<version>.md.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release; must match replay_helper.__version__"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: dcs-replay-helper
+    shell: bash
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check version and notes
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not a version"; exit 1; }
+          package=$(uv run python -c "import replay_helper; print(replay_helper.__version__)")
+          [[ "$package" == "$VERSION" ]] || { echo "::error::the package is version $package, not $VERSION"; exit 1; }
+          [[ -f "release-notes/$VERSION.md" ]] || { echo "::error::release-notes/$VERSION.md is missing"; exit 1; }
+      - run: uv run pytest -q
+      - run: uv run --group build pyinstaller --noconfirm replay_helper.spec
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "replay-helper-v$VERSION" dist/DCSReplayHelper.exe
+          --target "$GITHUB_SHA"
+          --title "DCS Replay Helper $VERSION"
+          --notes-file "release-notes/$VERSION.md"
