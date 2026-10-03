@@ -10,16 +10,18 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 
 ## Status
 
-**Milestone 2 of 6: speed control.**
+**Milestone 3 of 6: seeking.**
 - **Done:**
-  - The window shows the connection, the model clock and mission time of day, and the commanded and measured speed. It has Play/Pause and a manual "pause at model time" stop.
-  - It sets the replay speed.
-- **How the speed is set:**
-  - The app presses one key at a time and waits for DCS to report the new speed before pressing the next. A key DCS missed is retried up to 3 times, and then reported.
-  - Going down from above 1x is done as "back to 1x", then up, because those are the steps measured in DCS.
-  - The speed is changed while paused when you set it while paused, so the replay never runs faster than you asked.
-- **Speed limit:** if the replay runs faster than the limit, for example after pressing `LCtrl+Z` in DCS by hand, the app pauses it and steps back down to the limit.
-- **Not built yet:** seeking with pre-roll and post-roll (milestone 3), and the Tacview bookmarks (milestones 4 and 5).
+  - The window shows the connection, the model clock and mission time of day, and the commanded and measured speed. It has Play/Pause.
+  - **Seek:** enter a target in replay time (`1:07.95`, `67.95`) or mission time (`16:31:07`), and set a pre-roll and an optional post-roll.
+    - The app pauses, sets the **Seek at** speed while paused, and arms a stop at the target minus the pre-roll.
+    - It plays to the stop, then sets the **Playback** speed while still paused.
+    - With a post-roll set, **Play through** then plays past the target and pauses that long after it.
+    - Targets behind the replay are refused, because replays only run forward.
+    - If something unexpected happens mid-seek, the seek stops, the replay is left paused, and the reason is shown. That covers the track restarting, a pause from DCS, a lost connection, or DCS not answering.
+  - **Speed:** set by pressing one key at a time and waiting for DCS to confirm each step. A missed key is retried up to 3 times.
+    - **Seek at** is also the speed limit: if the replay ever runs faster, it's paused and brought back down.
+- **Not built yet:** picking targets from Tacview bookmarks (milestones 4 and 5).
 
 ## Use with DCS
 
@@ -29,7 +31,7 @@ The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scri
 2. Restart DCS. `Logs\dcs.log` should contain `REPLAYHELPER (Main): loaded 0.1.0 (callbacks registered)`.
 3. Start the app from this folder with `uv run replay-helper`. On Windows `uv` picks up Python from the repo's `.python-version`.
 4. Play a track in DCS. The app connects within a second.
-5. To change speed, pick it and click **Set speed**. The app brings the DCS window to the front to press the keys, so DCS must not be minimised.
+5. Type a time under **Seek**, set the pre-roll and post-roll, and click **Go**. To change speed, the app brings the DCS window to the front to press the keys, so DCS must not be minimised.
 
 ## Development
 
@@ -54,6 +56,7 @@ src/replay_helper/
   dcs/link.py                      # Qt UDP link, connection watchdog, clock interpolation
   dcs/keys.py                      # LCtrl/LAlt/LShift+Z as scan codes to the DCS window (Windows)
   dcs/speed.py                     # closed-loop speed controller and speed limit
+  seek.py                          # seek state machine: pause, speed, arm, run, slow, post-roll
   ui/main_window.py                # main window
   timefmt.py                       # time formatting
   app.py                           # entry point (replay-helper / python -m replay_helper)

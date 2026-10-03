@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from .dcs import protocol
 from .dcs.link import DcsLink
 from .dcs.speed import AutoKeyBackend, SpeedController
+from .seek import SeekController
 from .ui.main_window import MainWindow
 
 
@@ -25,7 +26,8 @@ def main() -> int:
         )
         return 1
     speed = SpeedController(link, AutoKeyBackend(link))
-    window = MainWindow(link, speed)
+    seek = SeekController(link, speed)
+    window = MainWindow(link, speed, seek)
     window.show()
     code = app.exec()
     speed.shutdown()

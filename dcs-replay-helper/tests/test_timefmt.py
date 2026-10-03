@@ -21,3 +21,26 @@ def test_fmt_tod(s, expected):
                                         (0.25, "0.25x"), (2.4, "2.4x")])
 def test_fmt_speed(x, expected):
     assert fmt_speed(x) == expected
+
+
+from replay_helper.timefmt import parse_clock, tod_to_model  # noqa: E402
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("67.95", 67.95), ("1:07.95", 67.95), ("0:01:07.95", 67.95), ("16:31:07", 59467), (" 5 ", 5),
+    ("1:00:00", 3600),
+])
+def test_parse_clock(text, expected):
+    assert parse_clock(text) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("text", ["", ":", "1::2", "a:10", "1:60", "1:2:3:4", "-5", "nan", "1:inf", "x"])
+def test_parse_clock_rejects(text):
+    with pytest.raises(ValueError):
+        parse_clock(text)
+
+
+def test_tod_to_model():
+    assert tod_to_model(59467, 59400) == 67
+    assert tod_to_model(100, 86000) == 500  # replay running past midnight
+    assert tod_to_model(59000, 59400) == -400

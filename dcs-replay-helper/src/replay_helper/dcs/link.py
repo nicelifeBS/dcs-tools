@@ -53,6 +53,7 @@ class DcsLink(QObject):
         self._state_at = 0.0
         self._connected = False
         self.hook_version: str | None = None
+        self._last_ping = 0.0
 
     # --- lifecycle --------------------------------------------------------------------
     def start(self) -> bool:
@@ -133,8 +134,14 @@ class DcsLink(QObject):
         self.message.emit(msg)
 
     def _check_alive(self) -> None:
-        if self._connected and self._clock() - self._state_at > self._timeout_s:
+        now = self._clock()
+        if self._connected and now - self._state_at > self._timeout_s:
             self._set_connected(False)
+        # The hook says HELLO once, when its link opens; if the app missed it (started later,
+        # or a packet dropped), ask until the version is known.
+        if self._connected and self.hook_version is None and now - self._last_ping >= 1.0:
+            self._last_ping = now
+            self.send(protocol.cmd_ping())
 
     def _set_connected(self, value: bool) -> None:
         if value != self._connected:

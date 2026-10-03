@@ -74,17 +74,19 @@ def fake_dcs_server() -> Iterator[Callable[..., tuple[object, int, int]]]:
     stops: list[threading.Event] = []
     threads: list[threading.Thread] = []
 
-    def start(**kwargs):
+    def start(time_scale: float = 1.0, **kwargs):
         sim = fake.FakeDcs(**kwargs)
         state_port, cmd_port = free_udp_port(), free_udp_port()
-        stop = threading.Event()
+        stop, bound = threading.Event(), threading.Event()
         t = threading.Thread(
             target=fake.serve,
             kwargs=dict(sim=sim, fps=200, state_port=state_port, cmd_port=cmd_port,
-                        should_stop=stop.is_set, quiet=True),
+                        should_stop=stop.is_set, quiet=True, time_scale=time_scale,
+                        on_ready=bound.set),
             daemon=True,
         )
         t.start()
+        assert bound.wait(5), "fake DCS did not start"
         stops.append(stop)
         threads.append(t)
         return sim, state_port, cmd_port

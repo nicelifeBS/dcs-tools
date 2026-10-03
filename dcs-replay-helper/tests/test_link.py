@@ -20,7 +20,7 @@ def connect(qapp, fake_dcs_server):
         link = DcsLink(state_port=state_port, cmd_port=cmd_port)
         assert link.start()
         links.append(link)
-        assert wait_until(qapp, lambda: link.connected), "no STATE from fake DCS"
+        assert wait_until(qapp, lambda: link.connected and link.hook_version), "no reply from fake DCS"
         return sim, link
 
     yield make
@@ -109,3 +109,31 @@ def test_bind_conflict_is_reported(qapp) -> None:
     assert not second.start()
     assert second.bind_error()
     first.stop()
+
+
+def test_asks_for_hook_version_until_known(qapp, fake_dcs_server) -> None:
+    from replay_helper.dcs.protocol import Hello, Pong
+
+    sim, state_port, cmd_port = fake_dcs_server()
+    link = DcsLink(state_port=state_port, cmd_port=cmd_port)
+    real_handle, lost = link._handle, [True]
+
+    def handle(msg):  # HELLO and the first PONGs never arrive
+        if lost[0] and isinstance(msg, (Hello, Pong)):
+            return
+        real_handle(msg)
+
+    link._handle = handle
+    sent = []
+    real_send = link.send
+    link.send = lambda line: (sent.append(line), real_send(line))
+    assert link.start()
+    assert wait_until(qapp, lambda: link.connected)
+    assert wait_until(qapp, lambda: sent.count("PING") >= 2, timeout=3)  # asked again
+    assert link.hook_version is None
+    lost[0] = False
+    assert wait_until(qapp, lambda: link.hook_version == "fake-0.1.0", timeout=3)
+    pings = sent.count("PING")
+    wait_until(qapp, lambda: False, timeout=1.5)
+    assert sent.count("PING") == pings  # stops asking once known
+    link.stop()

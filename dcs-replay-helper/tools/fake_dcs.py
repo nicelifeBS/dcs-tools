@@ -59,6 +59,7 @@ class FakeDcs:
         self.date = date
         self.theatre = theatre
         self.outbox: list[str] = [f"HELLO {VERSION}"]
+        self.max_running_accel = 0.0  # fastest speed the replay actually ran at (for tests)
         self._next_state = 0.0
 
     def state_line(self) -> str:
@@ -112,6 +113,7 @@ class FakeDcs:
         """Advance one frame of `dt` real seconds."""
         self.rt += dt
         if not self.paused:
+            self.max_running_accel = max(self.max_running_accel, self.accel)
             self.t += dt * self.accel
             if self.stop is not None and self.t >= self.stop:
                 target, self.stop = self.stop, None
@@ -130,10 +132,13 @@ class FakeDcs:
 
 
 def serve(sim: FakeDcs, *, fps: float = 60.0, state_port: int = STATE_PORT, cmd_port: int = CMD_PORT,
-          should_stop=lambda: False, quiet: bool = False) -> None:
+          should_stop=lambda: False, quiet: bool = False, time_scale: float = 1.0,
+          on_ready=lambda: None) -> None:
+    """Run the simulation in real time; time_scale > 1 runs it faster (for tests)."""
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rx.bind((HOST, cmd_port))
     rx.setblocking(False)
+    on_ready()
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dt = 1.0 / fps
     last = time.monotonic()
@@ -149,7 +154,7 @@ def serve(sim: FakeDcs, *, fps: float = 60.0, state_port: int = STATE_PORT, cmd_
                     print(f"<< {line}")
                 sim.handle(line)
             now = time.monotonic()
-            sim.frame(now - last)
+            sim.frame((now - last) * time_scale)
             last = now
             for line in sim.drain():
                 tx.sendto(line.encode("utf-8"), (HOST, state_port))
