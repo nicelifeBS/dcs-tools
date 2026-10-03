@@ -1,0 +1,16 @@
+[project]
+name = "dcs-replay-helper"
+version = "0.0.1"
+description = "Drive DCS track replays from Tacview bookmarks: seek forward with a speed cap and pre/post-roll"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "lupa>=2.0",  # runs the DCS hook in Lua 5.1 for tests
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
