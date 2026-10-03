@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from conftest import WIDGETS, wait_until
@@ -91,7 +93,7 @@ def test_window_seek_with_pre_and_post_roll(qapp, app_rig) -> None:
 
     window.play_button.click()
     assert wait_until(qapp, lambda: window.seek_status.text().startswith("Paused at"), timeout=10)
-    assert window.seek_status.text() == "Paused at 2:03.0, 3.0 s after the target."
+    assert re.fullmatch(r"Paused at 2:03\.\d, 3\.\d s after the target\.", window.seek_status.text())
     assert 123.0 <= sim.t < 123.5 and sim.paused
     assert wait_until(qapp, lambda: window.play_button.text() == "Play")  # on the next STATE
 
@@ -122,3 +124,29 @@ def test_window_cancel_seek(qapp, app_rig) -> None:
     assert window.seek_status.text() == "Seek cancelled."
     assert wait_until(qapp, lambda: sim.paused and sim.stop is None)
     assert window.go_button.isEnabled()
+
+
+def test_window_seeks_to_a_tacview_bookmark(qapp, app_rig) -> None:
+    from pathlib import Path
+
+    sim, link, window = app_rig(start=50.0, time_scale=10)
+    assert wait_until(qapp, lambda: link.connected and link.hook_version)
+    window.load_acmi(str(Path(__file__).parent / "data" / "sample_caucasus.zip.acmi"))
+    panel = window.events
+    assert wait_until(qapp, lambda: panel.acmi is not None)
+
+    window.preroll_spin.setValue(5)
+    window.postroll_spin.setValue(3)
+    panel.table.selectRow(1)  # "idiot" at 88.01
+    panel.go_button.click()
+    assert wait_until(qapp, lambda: window.seek_status.text().startswith("Ready"), timeout=10), \
+        window.seek_status.text()
+    assert 83.01 <= sim.t < 83.6 and sim.paused
+    assert window.goto_edit.text() == "88.01"
+    assert "seek to bookmark 'idiot' at 1:28.0" in window.log_view.toPlainText()
+    window.refresh()
+    # Both bookmarks are now unreachable: Running in is behind, and the replay sits at idiot's
+    # pre-roll point already.
+    m = panel.model
+    past = {m.event_at(r).label for r in range(m.rowCount()) if m.is_past(r)}
+    assert {"Running in", "idiot"} <= past

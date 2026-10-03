@@ -29,6 +29,9 @@ def main() -> int:
     seek = SeekController(link, speed)
     window = MainWindow(link, speed, seek)
     window.show()
+    acmi = [arg for arg in sys.argv[1:] if arg.lower().endswith(".acmi")]
+    if acmi:
+        window.load_acmi(acmi[0])  # replay-helper path/to/recording.zip.acmi
     code = app.exec()
     speed.shutdown()
     link.stop()

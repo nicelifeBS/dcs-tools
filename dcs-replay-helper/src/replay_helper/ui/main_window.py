@@ -1,4 +1,4 @@
-"""Main window: connection, clock, play/pause, seeking with pre/post-roll, and speed."""
+"""Main window: connection, clock, play/pause, seeking with pre/post-roll, speed, Tacview events."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QStyle,
     QVBoxLayout,
     QWidget,
@@ -26,7 +27,9 @@ from ..dcs.link import DcsLink
 from ..dcs.protocol import Arrived, Disarmed, Error, Hello, Message, Pong, State
 from ..dcs.speed import SpeedController
 from ..seek import Phase, SeekController, SeekError
+from ..tacview.events import Event
 from ..timefmt import fmt_model, fmt_speed, fmt_tod, parse_clock, tod_to_model
+from .event_table import EventPanel
 
 REFRESH_MS = 50
 SPEED_CHOICES = (0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16)
@@ -159,17 +162,31 @@ class MainWindow(QMainWindow):
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(500)
 
-        root = QVBoxLayout()
-        root.addLayout(top)
-        root.addLayout(clock_box)
-        root.addWidget(self.play_button)
-        root.addWidget(goto_box)
-        root.addWidget(speed_box)
-        root.addWidget(self.log_view, 1)
+        # Tacview events
+        self.events = EventPanel()
+        self.events.seekRequested.connect(self._seek_event)
+
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.addLayout(top)
+        left.addLayout(clock_box)
+        left.addWidget(self.play_button)
+        left.addWidget(goto_box)
+        left.addWidget(speed_box)
+        left.addWidget(self.log_view, 1)
+        left_widget = QWidget()
+        left_widget.setLayout(left)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(self.events)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([560, 640])
         central = QWidget()
-        central.setLayout(root)
+        root = QVBoxLayout(central)
+        root.addWidget(splitter)
         self.setCentralWidget(central)
-        self.resize(600, 620)
+        self.resize(1220, 660)
 
         link.connectedChanged.connect(self._on_connected)
         link.stateChanged.connect(self._on_state)
@@ -218,6 +235,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(self.seek is not None and self.seek.phase is not Phase.IDLE)
         self.speed_button.setEnabled(connected and not speed_busy and not seek_busy)
         self.limit_combo.setEnabled(not seek_busy)
+        self.events.set_go_enabled(connected and not seek_busy and self.seek is not None)
 
     def _set_play_button(self, paused: bool) -> None:
         # Standard icons instead of ▶/⏸ characters, which some fonts lack.
@@ -258,18 +276,33 @@ class MainWindow(QMainWindow):
         return t
 
     def _go(self) -> None:
+        try:
+            target = self._target_time()
+        except ValueError as exc:
+            self._status(self.seek_status, str(exc), error=True)
+            return
+        self._start_seek(target, fmt_model(target))
+
+    def _seek_event(self, event: Event, t: float) -> None:
+        """A seek picked from the Tacview event list."""
+        self.goto_mode.setCurrentIndex(self.goto_mode.findData(MODE_REPLAY))
+        self.goto_edit.setText(f"{t:.2f}")
+        self._start_seek(t, f"{event.kind.value.lower()} '{event.label}' at {fmt_model(t)}")
+
+    def _start_seek(self, target: float, what: str) -> None:
         if self.seek is None:
             return
         try:
-            target = self._target_time()
             self.seek.seek(target, preroll=self.preroll_spin.value(), postroll=self.postroll_spin.value(),
                            seek_speed=self._limit(), playback_speed=self._playback())
-        except (ValueError, SeekError) as exc:
+        except SeekError as exc:
             text = str(exc)
             self._status(self.seek_status, text[:1].upper() + text[1:], error=True)
             return
-        self._log(f"seek to {fmt_model(target)}, pre-roll {self.preroll_spin.value():g} s, "
-                  f"at {fmt_speed(self._limit())}")
+        self._log(f"seek to {what}, pre-roll {self.preroll_spin.value():g} s, at {fmt_speed(self._limit())}")
+
+    def load_acmi(self, path: str) -> None:
+        self.events.load(path)
 
     def _cancel(self) -> None:
         if self.seek is not None and self.seek.phase is not Phase.IDLE:
@@ -382,6 +415,7 @@ class MainWindow(QMainWindow):
         s = self.link.state
         t = self.link.model_time_now() if self.link.connected else None
         self.clock_label.setText(fmt_model(t))
+        self.events.set_now(t, self.preroll_spin.value(), s.start_tod if s is not None else None)
         if s is None or not self.link.connected:
             self.tod_label.setText("Mission time --:--:--")
             self.speed_label.setText("")
