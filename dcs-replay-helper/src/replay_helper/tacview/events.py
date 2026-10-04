@@ -52,6 +52,7 @@ class Event:
     label: str
     units: str  # who is involved, for display
     object_ids: tuple[int, ...] = ()
+    side: str = ""  # Tacview color of the side involved ("Blue", "Red", ...), "" if unknown
 
 
 def _units(f: AcmiFile, ids) -> str:
@@ -67,6 +68,15 @@ def _units(f: AcmiFile, ids) -> str:
 def _side(o: AcmiObject) -> str:
     # Color is the side as Tacview shows it; DCS2ACMI's Coalition names ("Enemies") mislead.
     return o.color or o.coalition or ""
+
+
+def _ids_side(f: AcmiFile, ids) -> str:
+    """The side of the first of these objects that has one."""
+    for oid in ids:
+        obj = f.objects.get(oid)
+        if obj is not None and _side(obj):
+            return _side(obj)
+    return ""
 
 
 def _is_weapon(o: AcmiObject) -> bool:
@@ -100,7 +110,8 @@ def _explicit_events(f: AcmiFile) -> list[Event]:
                      "LeftArea": "left the area"}.get(e.type, e.type)
             if e.object_ids:
                 label = f"{_units(f, e.object_ids[:1])} {label}"
-        out.append(Event(e.t, kind, label, _units(f, e.object_ids), e.object_ids))
+        out.append(Event(e.t, kind, label, _units(f, e.object_ids), e.object_ids,
+                         _ids_side(f, e.object_ids)))
     return out
 
 
@@ -127,7 +138,7 @@ def _launches(f: AcmiFile) -> list[Event]:
             label = f"{name} ×{len(run)}" if len(run) > 1 else name
             shooters = [o.parent for o in run if o.parent is not None]
             units = _units(f, dict.fromkeys(shooters)) if shooters else side
-            out.append(Event(run[0].first_t, Kind.LAUNCH, label, units, tuple(o.id for o in run)))
+            out.append(Event(run[0].first_t, Kind.LAUNCH, label, units, tuple(o.id for o in run), side))
     return out
 
 
@@ -138,7 +149,7 @@ def _removals(f: AcmiFile) -> list[Event]:
     for o in f.objects.values():
         if o.removed_t is None or not _is_unit(o) or o.id in left or o.id in destroyed:
             continue
-        out.append(Event(o.removed_t, Kind.DESTROYED, f"{o.label} lost", _side(o), (o.id,)))
+        out.append(Event(o.removed_t, Kind.DESTROYED, f"{o.label} lost", _side(o), (o.id,), _side(o)))
     return out
 
 
@@ -147,7 +158,7 @@ def _ejections(f: AcmiFile) -> list[Event]:
     out = []
     for run in _chains(objs, EJECTION_GAP_S):
         out.append(Event(run[0].first_t, Kind.EJECTION, "Ejection", _side(run[0]),
-                         tuple(o.id for o in run)))
+                         tuple(o.id for o in run), _side(run[0])))
     return out
 
 

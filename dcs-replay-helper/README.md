@@ -23,6 +23,8 @@ DCS gives Lua no way to set time acceleration. So the app presses DCS's own keys
 1. **Connect:** play a track in DCS. The app connects within a second and shows the replay clock and the mission time of day.
 2. **Load your Tacview recording:** **File → Open Tacview recording…**, or `DCSReplayHelper.exe recording.zip.acmi [track.trk]`. Its bookmarks are listed on the right.
    - Tick **Launches**, **Kills**, **Ejections** and so on to see events the app works out from the recording. There's also a search box.
+   - Events involving the blue or red side are listed in a muted blue or red.
+   - Events the replay can no longer reach before their pre-roll are grayed out. A few seconds after they happen (5 s) they scroll out of the list. Tick **Show past events** to keep them listed.
 3. **Check the time sync** box above the list. It should read for example "time zone UTC+4:00 (auto) · replay time = Tacview time +0.00 s".
    - Tacview times are UTC and the mission clock is local map time. The app works out the difference.
    - **Open track…** checks this before DCS is running.
@@ -58,7 +60,7 @@ DCS gives Lua no way to set time acceleration. So the app presses DCS's own keys
 
 ```
 cd dcs-replay-helper
-uv run pytest                                          # 237 tests: hook (Lua 5.1 via lupa), protocol, link,
+uv run pytest                                          # 240 tests: hook (Lua 5.1 via lupa), protocol, link,
                                                        # speed, seek, Tacview, time sync, installer, window
 uv run python tools/fake_dcs.py                        # a stand-in for DCS + hook, on the same ports
 uv run replay-helper                                   # the app, in a second terminal

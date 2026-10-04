@@ -41,6 +41,46 @@ def test_model_grays_out_events_behind_the_replay(qapp) -> None:
     assert m.past_count == 0
 
 
+def test_model_counts_events_long_gone(qapp) -> None:
+    from replay_helper.ui.event_table import PAST_KEEP_S, EventTableModel
+
+    m = EventTableModel()
+    m.set_events(events())
+    gone = []
+    m.goneChanged.connect(gone.append)
+    m.set_now(67.95 + PAST_KEEP_S - 0.1, preroll=5)  # Running in happened, but only just
+    assert m.past_count == 2 and m.gone_count == 0
+    m.set_now(67.95 + PAST_KEEP_S + 0.1, preroll=5)
+    assert m.gone_count == 1 and gone == [1]
+    m.set_now(None, preroll=5)  # DCS away: nothing grayed, but gone stays gone
+    assert m.past_count == 0 and m.gone_count == 1
+    m.set_offset(-10)  # every event 10 s earlier: AGR_20A (70.76 -> 60.76) is gone too
+    assert m.gone_count == 2
+    m.set_now(1.0, preroll=5)  # the track restarted
+    assert m.gone_count == 0 and gone == [1, 2, 0]
+
+
+def test_model_colors_events_by_side(qapp) -> None:
+    from PySide6.QtCore import Qt
+
+    from replay_helper.tacview.events import Event, Kind
+    from replay_helper.ui.event_table import PAST_COLOR, SIDE_COLORS, EventTableModel
+
+    m = EventTableModel()
+    m.set_events([Event(10, Kind.LAUNCH, "a", "", side="Blue"), Event(20, Kind.LAUNCH, "b", "", side="Red"),
+                  Event(30, Kind.BOOKMARK, "c", "")])
+
+    def color(row):
+        brush = m.data(m.index(row, 0), Qt.ItemDataRole.ForegroundRole)
+        return brush.color().name() if brush is not None else None
+
+    assert [color(r) for r in range(3)] == [SIDE_COLORS["blue"][0], SIDE_COLORS["red"][0], None]
+    m.set_dark(True)
+    assert [color(r) for r in range(3)] == [SIDE_COLORS["blue"][1], SIDE_COLORS["red"][1], None]
+    m.set_now(15, preroll=5)  # gray wins over the side
+    assert color(0) == PAST_COLOR.name() and color(1) == PAST_COLOR.name()
+
+
 def test_offset_shifts_dcs_times(qapp) -> None:
     from replay_helper.ui.event_table import EventTableModel
 
@@ -77,7 +117,7 @@ def test_panel_loads_and_requests_seek(qapp) -> None:
     assert "2 bookmarks, 5 events" in panel.file_label.text()
     assert panel.proxy.rowCount() == 2
 
-    panel.set_now(80.0, 5.0, 59400)  # Running in is behind now; idiot (88.01) is not
+    panel.set_now(70.0, 5.0, 59400)  # Running in (67.95) is behind now; idiot (88.01) is not
     panel.table.selectRow(0)
     assert panel.selected_row() == 0  # past rows can be selected (to sync on them)...
     assert not panel.go_button.isEnabled()  # ...but not sought to
@@ -173,3 +213,41 @@ def test_date_mismatch_warns(qapp) -> None:
     panel.set_now(10.0, 5.0, 59400, "2024-06-01")
     assert panel.sync_warning.isVisibleTo(panel)
     assert "is it the recording of this track?" in panel.sync_warning.text()
+
+
+def test_past_events_leave_the_list(qapp) -> None:
+    from replay_helper.settings import Settings
+    from replay_helper.tacview.events import Kind
+    from replay_helper.ui.event_table import EventPanel
+
+    panel = EventPanel(Settings())
+    panel.load(str(SAMPLE))
+    assert wait_until(qapp, lambda: panel.acmi is not None)
+    panel.set_checked_filters(["Bookmarks", "Launches", "Kills", "Ejections"])
+    assert panel.proxy.rowCount() == 5
+    panel.set_now(74.0, 5.0)  # not shown: Running in (67.95) leaves at once
+    assert panel.proxy.rowCount() == 4
+    panel.show_past.setChecked(True)  # back, grayed
+    assert panel.proxy.rowCount() == 5 and panel.model.is_past(0)
+    assert Settings().get("show_past_events") is True
+    panel.show_past.setChecked(False)
+    assert panel.proxy.rowCount() == 4
+
+    # Shown, the rows leaving shrink away before they are dropped.
+    panel.resize(800, 600)
+    panel.show()
+    qapp.processEvents()
+    panel.set_now(93.5, 5.0)  # AGR_20A (70.76) and idiot (88.01) are gone now
+    assert panel.collapse.state() == panel.collapse.State.Running and panel.proxy.rowCount() == 4
+    assert wait_until(qapp, lambda: panel.proxy.rowCount() == 2)
+    assert panel.table.rowHeight(0) == panel.table.verticalHeader().defaultSectionSize()
+    assert [panel.proxy.index(r, 0).data(256).kind for r in range(2)] == [Kind.DESTROYED, Kind.EJECTION]
+
+    panel.set_now(150.0, 5.0)  # all gone; a filter change mid-collapse settles it at once
+    assert panel.collapse.state() == panel.collapse.State.Running
+    panel.search.setText("x")
+    assert panel.proxy.rowCount() == 0 and panel.collapse.state() == panel.collapse.State.Stopped
+    panel.search.setText("")
+    panel.set_now(0.0, 5.0)  # the track restarted: everything is back
+    assert panel.proxy.rowCount() == 5
+    panel.close()

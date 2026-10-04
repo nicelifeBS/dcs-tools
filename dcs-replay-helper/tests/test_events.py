@@ -26,6 +26,7 @@ def test_sample_events() -> None:
         (91.06, Kind.EJECTION, "Ejection", "Blue"),
     ]
     assert len(events[1].object_ids) == 7
+    assert {e.side for e in events} == {"Blue"}  # bookmarks take the side of their first object
 
 
 def test_salvos_split_by_gap_and_side(tmp_path: Path) -> None:
@@ -35,6 +36,7 @@ def test_salvos_split_by_gap_and_side(tmp_path: Path) -> None:
     events = build_events(read_acmi(write(tmp_path, body)))
     assert [(e.t, e.label, e.units) for e in events] == [
         (1, "AIM-120C ×2", "Blue"), (5, "AIM-120C", "Blue"), (5.1, "AIM-120C", "Red")]
+    assert [e.side for e in events] == ["Blue", "Blue", "Red"]
 
 
 def test_launch_names_the_shooter_when_parent_is_known(tmp_path: Path) -> None:

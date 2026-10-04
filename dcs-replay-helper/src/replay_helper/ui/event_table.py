@@ -8,11 +8,16 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QAbstractAnimation,
     QAbstractTableModel,
+    QEasingCurve,
+    QEvent,
     QModelIndex,
     QObject,
+    QRect,
     QSortFilterProxyModel,
     Qt,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import QBrush, QColor
@@ -28,6 +33,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -43,6 +50,14 @@ from ..timesync import SyncResult, SyncSettings, compute, fine_for_sync, fmt_tz
 PAST_COLOR = QColor("#9e9e9e")
 ERROR_STYLE = "color: #c62828;"
 MIN_LEAD_S = 0.2  # matches seek.MIN_LEAD_S: a pre-roll point closer than this is behind
+PAST_KEEP_S = 5.0  # an event stays listed (grayed) this long after it happens, to sync on it
+COLLAPSE_MS = 400  # how long past events take to scroll out of the list
+
+# Text color by side, as (light theme, dark theme): toned down so they read on either background.
+SIDE_COLORS = {
+    "blue": ("#2b5c9e", "#82aee6"),
+    "red": ("#a83434", "#e88a8a"),
+}
 
 # Filter checkboxes: label, kinds, checked by default
 FILTERS = (
@@ -61,6 +76,8 @@ HEADERS = ("Replay time", "Mission time", "Kind", "Event", "Units")
 class EventTableModel(QAbstractTableModel):
     """Events in time order. Times shown are DCS replay times: ACMI time + offset."""
 
+    goneChanged = Signal(int)  # the new gone_count
+
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._events: list[Event] = []
@@ -68,6 +85,10 @@ class EventTableModel(QAbstractTableModel):
         self.offset = 0.0
         self.start_tod: float | None = None
         self._past = 0  # rows [0, _past) can no longer be reached
+        self._gone = 0  # rows [0, _gone) happened more than PAST_KEEP_S ago
+        self._last_now: float | None = None  # kept while DCS is away, so gone rows stay gone
+        self._side_brushes: dict[str, QBrush] = {}
+        self.set_dark(False)
 
     # --- data -------------------------------------------------------------------------
     def set_events(self, events: list[Event], offset: float = 0.0) -> None:
@@ -76,7 +97,9 @@ class EventTableModel(QAbstractTableModel):
         self.offset = offset
         self._times = [e.t + offset for e in self._events]
         self._past = 0
+        self._gone = self._gone_for(self._last_now)
         self.endResetModel()
+        self.goneChanged.emit(self._gone)
 
     def set_offset(self, offset: float) -> None:
         if offset == self.offset:
@@ -86,6 +109,14 @@ class EventTableModel(QAbstractTableModel):
         self._past = 0  # recomputed on the next set_now
         if self._events:
             self.dataChanged.emit(self.index(0, 0), self.index(len(self._events) - 1, len(HEADERS) - 1))
+        self._set_gone(self._gone_for(self._last_now))
+
+    def set_dark(self, dark: bool) -> None:
+        """Pick the side colors for a dark or a light background."""
+        self._side_brushes = {side: QBrush(QColor(pair[dark])) for side, pair in SIDE_COLORS.items()}
+        if self._events:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self._events) - 1, len(HEADERS) - 1),
+                                  [Qt.ItemDataRole.ForegroundRole])
 
     def event_at(self, row: int) -> Event:
         return self._events[row]
@@ -100,13 +131,32 @@ class EventTableModel(QAbstractTableModel):
     def past_count(self) -> int:
         return self._past
 
+    @property
+    def gone_count(self) -> int:
+        """Rows [0, gone_count) happened more than PAST_KEEP_S before the replay clock."""
+        return self._gone
+
     def set_now(self, now: float | None, preroll: float) -> None:
-        """Gray out the events whose pre-roll point is behind `now`."""
+        """Gray out the events whose pre-roll point is behind `now`, and count those long gone.
+
+        While DCS is away (`now` is None) nothing is grayed, but gone events stay gone.
+        """
         past = 0 if now is None else bisect.bisect_right(self._times, now + preroll + MIN_LEAD_S)
         if past != self._past:
             lo, hi = sorted((past, self._past))
             self._past = past
             self.dataChanged.emit(self.index(lo, 0), self.index(hi - 1, len(HEADERS) - 1))
+        if now is not None:
+            self._last_now = now
+            self._set_gone(self._gone_for(now))
+
+    def _gone_for(self, now: float | None) -> int:
+        return 0 if now is None else bisect.bisect_left(self._times, now - PAST_KEEP_S)
+
+    def _set_gone(self, gone: int) -> None:
+        if gone != self._gone:
+            self._gone = gone
+            self.goneChanged.emit(gone)
 
     def set_start_tod(self, start_tod: float | None) -> None:
         if start_tod != self.start_tod:
@@ -148,8 +198,10 @@ class EventTableModel(QAbstractTableModel):
                 return e.label
             if col == COL_UNITS:
                 return e.units
-        elif role == Qt.ItemDataRole.ForegroundRole and self.is_past(row):
-            return QBrush(PAST_COLOR)
+        elif role == Qt.ItemDataRole.ForegroundRole:
+            if self.is_past(row):
+                return QBrush(PAST_COLOR)
+            return self._side_brushes.get(e.side.lower())
         elif role == Qt.ItemDataRole.ToolTipRole:
             if self.is_past(row):
                 return "Behind the replay (replays only run forward); you can still sync on it"
@@ -165,6 +217,7 @@ class EventFilterProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self.kinds: set[Kind] = {k for _, kinds, on in FILTERS if on for k in kinds}
         self.text = ""
+        self.hide_before = 0  # source rows before this are past and out of the list
 
     def _refilter(self, change) -> None:
         # Qt 6.10 replaced invalidateFilter() with begin/endFilterChange(); support both.
@@ -182,7 +235,13 @@ class EventFilterProxy(QSortFilterProxyModel):
     def set_text(self, text: str) -> None:
         self._refilter(lambda: setattr(self, "text", text.strip().lower()))
 
+    def set_hide_before(self, source_row: int) -> None:
+        if source_row != self.hide_before:
+            self._refilter(lambda: setattr(self, "hide_before", source_row))
+
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        if source_row < self.hide_before:
+            return False
         e: Event = self.sourceModel().event_at(source_row)
         if e.kind not in self.kinds:
             return False
@@ -212,6 +271,31 @@ class AcmiLoader(QObject):
         self.loaded.emit(f, events)
 
 
+class CollapseDelegate(QStyledItemDelegate):
+    """Draws a row shorter than the default height against its bottom edge, clipped.
+
+    Past rows leave the list by shrinking to nothing; drawn like this, they look like they
+    scroll off the top rather than squash.
+    """
+
+    def __init__(self, table: QTableView) -> None:
+        super().__init__(table)
+        self.table = table
+
+    def paint(self, painter, option, index) -> None:
+        full = self.table.verticalHeader().defaultSectionSize()
+        rect = option.rect
+        if rect.height() >= full:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        opt.rect = QRect(rect.left(), rect.bottom() + 1 - full, rect.width(), full)
+        painter.save()
+        painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
+        super().paint(painter, opt, index)
+        painter.restore()
+
+
 class EventPanel(QWidget):
     """Open a recording, filter its events, and ask for a seek to one of them."""
 
@@ -231,6 +315,7 @@ class EventPanel(QWidget):
         self._dcs_start_tod: float | None = None
         self._dcs_date: str | None = None
         self.model = EventTableModel(self)
+        self.model.goneChanged.connect(lambda _gone: self._sync_hidden())
         self.proxy = EventFilterProxy(self)
         self.proxy.setSourceModel(self.model)
         self.loader = AcmiLoader(self)
@@ -258,7 +343,15 @@ class EventPanel(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search events and units")
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self.proxy.set_text)
+        self.search.textChanged.connect(self._search_changed)
+        self.show_past = QCheckBox("Show past events")
+        self.show_past.setToolTip("Keep the events the replay has passed in the list, grayed out. "
+                                  f"Otherwise they scroll away {PAST_KEEP_S:g} s after they happen.")
+        self.show_past.setChecked(bool(settings.get("show_past_events")) if settings else False)
+        self.show_past.toggled.connect(self._show_past_toggled)
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search, 1)
+        search_row.addWidget(self.show_past)
 
         self.table = QTableView()
         self.table.setModel(self.proxy)
@@ -269,6 +362,8 @@ class EventPanel(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(False)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.table.setItemDelegate(CollapseDelegate(self.table))
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(COL_LABEL, QHeaderView.ResizeMode.Stretch)
         header.resizeSection(COL_UNITS, 180)
@@ -279,6 +374,19 @@ class EventPanel(QWidget):
         self.go_button.clicked.connect(self._request_seek)
         self.go_button.setEnabled(False)
         self.go_enabled = True  # cleared by the window while a seek runs or DCS is away
+
+        # past events leaving the list: the top proxy rows shrink away, then are filtered out
+        self._collapsing = 0  # proxy rows [0, _collapsing) are shrinking
+        self._collapse_to = 0  # proxy.hide_before once they are gone
+        self._row_height = 0
+        self.collapse = QVariantAnimation(self)
+        self.collapse.setStartValue(0.0)
+        self.collapse.setEndValue(1.0)
+        self.collapse.setDuration(COLLAPSE_MS)
+        self.collapse.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.collapse.valueChanged.connect(self._collapse_step)
+        self.collapse.finished.connect(self._collapse_finished)
+        self._update_side_colors()
 
         # time sync
         self.sync_info = QLabel()
@@ -351,7 +459,7 @@ class EventPanel(QWidget):
         layout.addWidget(self.progress)
         layout.addWidget(sync_box)
         layout.addLayout(filter_row)
-        layout.addWidget(self.search)
+        layout.addLayout(search_row)
         layout.addWidget(self.table, 1)
         layout.addLayout(bottom)
 
@@ -382,6 +490,7 @@ class EventPanel(QWidget):
 
     def _on_loaded(self, f: AcmiFile, events: list[Event]) -> None:
         self.acmi = f
+        self._settle()
         self.model.set_events(events, offset=self.model.offset)
         self.sync = self.settings.sync_for(f.path) if self.settings else SyncSettings()
         self._show_sync_settings()
@@ -409,6 +518,7 @@ class EventPanel(QWidget):
     # --- filtering and picking --------------------------------------------------------
     def _apply_kinds(self) -> None:
         kinds = {k for box, ks in self.checks if box.isChecked() for k in ks}
+        self._settle()
         self.proxy.set_kinds(kinds)
         self._fit_columns()
         self._update_go()
@@ -420,6 +530,79 @@ class EventPanel(QWidget):
             box.setChecked(box.text() in labels)
             box.blockSignals(False)
         self._apply_kinds()
+
+    def _search_changed(self, text: str) -> None:
+        self._settle()
+        self.proxy.set_text(text)
+        self._update_go()
+
+    def _show_past_toggled(self, on: bool) -> None:
+        if self.settings is not None:
+            self.settings.set("show_past_events", on)
+        self._sync_hidden()
+
+    # --- past events scrolling away ---------------------------------------------------
+    def _hidden_target(self) -> int:
+        return 0 if self.show_past.isChecked() else self.model.gone_count
+
+    def _sync_hidden(self) -> None:
+        """Bring the rows hidden as past in line with the model; animate the ones leaving."""
+        target = self._hidden_target()
+        if self._collapsing:
+            if target >= self._collapse_to:
+                return  # the rest leave when this collapse ends
+            self._settle()  # rows came back (track restarted, offset changed)
+        current = self.proxy.hide_before
+        if target == current:
+            return
+        leaving = 0  # visible rows that go
+        while leaving < self.proxy.rowCount() and \
+                self.proxy.mapToSource(self.proxy.index(leaving, 0)).row() < target:
+            leaving += 1
+        bar = self.table.verticalScrollBar()
+        height = sum(self.table.rowHeight(r) for r in range(leaving))
+        if target < current or not leaving or not self.table.isVisible() or bar.value() >= height:
+            # Nothing to see go: change the list at once, keeping the rows in view where they are.
+            value = bar.value()
+            self._set_hidden(target)
+            if target > current:
+                bar.setValue(value - height)
+            return
+        self._collapsing, self._collapse_to = leaving, target
+        self._row_height = self.table.verticalHeader().defaultSectionSize()
+        self.collapse.start()
+
+    def _collapse_step(self, value: float) -> None:
+        height = round(self._row_height * (1.0 - value))
+        for r in range(self._collapsing):
+            self.table.setRowHeight(r, height)
+
+    def _collapse_finished(self) -> None:
+        self._settle()
+        self._sync_hidden()  # more may have gone meanwhile
+
+    def _settle(self) -> None:
+        """End a running collapse now: its rows leave the list."""
+        if not self._collapsing:
+            return
+        if self.collapse.state() != QAbstractAnimation.State.Stopped:
+            self.collapse.stop()
+        for r in range(self._collapsing):
+            self.table.setRowHeight(r, self._row_height)
+        self._collapsing = 0
+        self._set_hidden(self._collapse_to)
+
+    def _set_hidden(self, source_row: int) -> None:
+        self.proxy.set_hide_before(source_row)
+        self._update_go()
+
+    def _update_side_colors(self) -> None:
+        self.model.set_dark(self.table.palette().base().color().lightnessF() < 0.5)
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            self._update_side_colors()
+        super().changeEvent(event)
 
     def _fit_columns(self) -> None:
         for col in (COL_TIME, COL_TOD, COL_KIND):
