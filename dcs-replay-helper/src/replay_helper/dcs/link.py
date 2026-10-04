@@ -88,6 +88,14 @@ class DcsLink(QObject):
     def disarm(self) -> None:
         self.send(protocol.cmd_disarm())
 
+    def focus(self, dcs_id: int, unit_name: str | None = None) -> None:
+        self.send(protocol.cmd_focus(dcs_id, unit_name))
+
+    @property
+    def takes_actions(self) -> bool:
+        """The connected hook changes speed and views itself (SPEED, FOCUS)."""
+        return protocol.hook_takes_actions(self.hook_version)
+
     # --- state ------------------------------------------------------------------------
     @property
     def connected(self) -> bool:

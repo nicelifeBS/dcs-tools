@@ -17,7 +17,7 @@ def dcs_dir(root: Path, name: str = "DCS") -> Path:
 
 def test_bundled_hook_is_the_source_file() -> None:
     assert hi.bundled_hook() == SRC_HOOK.read_bytes()
-    assert hi.hook_version(hi.bundled_hook()) == "0.1.0"
+    assert hi.hook_version(hi.bundled_hook()) == "0.2.0"
 
 
 def test_find_dcs_dirs(tmp_path: Path) -> None:
@@ -37,7 +37,7 @@ def test_install_and_status(tmp_path: Path) -> None:
 
     st = hi.install(d)
     assert (d / "Scripts" / "Hooks" / "ReplayHelper.lua").read_bytes() == hi.bundled_hook()
-    assert st.current and not st.needs_install and st.describe() == "hook 0.1.0 installed"
+    assert st.current and not st.needs_install and st.describe() == "hook 0.2.0 installed"
 
 
 def test_update_replaces_older_hook_and_removes_spike(tmp_path: Path) -> None:
@@ -48,7 +48,7 @@ def test_update_replaces_older_hook_and_removes_spike(tmp_path: Path) -> None:
     (hooks / "ReplayHelperSpike.lua").write_text("-- spike")
     st = hi.hook_status(d)
     assert st.needs_install and st.spike_present
-    assert st.describe() == ("hook 0.0.9 installed; 0.1.0 available; the spike hook "
+    assert st.describe() == ("hook 0.0.9 installed; 0.2.0 available; the spike hook "
                              "(ReplayHelperSpike.lua) is still there and clashes with it")
     st = hi.install(d)
     assert st.current and not st.spike_present and not (hooks / "ReplayHelperSpike.lua").exists()

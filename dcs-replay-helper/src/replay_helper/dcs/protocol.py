@@ -12,6 +12,18 @@ from dataclasses import dataclass
 HOST = "127.0.0.1"
 STATE_PORT = 47810  # hook -> app
 CMD_PORT = 47811  # app -> hook
+ACTIONS_SINCE = (0, 2, 0)  # hook version that takes SPEED and FOCUS
+
+
+def hook_takes_actions(version: str | None) -> bool:
+    """Whether a hook (or tools/fake_dcs.py, "fake-x.y.z") takes SPEED and FOCUS."""
+    v = (version or "").removeprefix("fake-")
+    parts = []
+    for p in v.split("."):
+        if not p.isdigit():
+            return False
+        parts.append(int(p))
+    return tuple(parts) >= ACTIONS_SINCE
 
 
 @dataclass(frozen=True)
@@ -62,11 +74,23 @@ class Disarmed:
 
 
 @dataclass(frozen=True)
+class Focused:
+    id: int  # DCS unit id now in F2 view
+    steps: int  # F2 steps it took
+
+
+@dataclass(frozen=True)
+class FocusFailed:
+    id: int | None
+    reason: str  # not_found | unavailable | no_camera | cycled | max_steps | cancelled | restart | mission_end
+
+
+@dataclass(frozen=True)
 class Error:
     text: str
 
 
-Message = State | Hello | Pong | Armed | Arrived | Disarmed | Error
+Message = State | Hello | Pong | Armed | Arrived | Disarmed | Focused | FocusFailed | Error
 
 
 def _fields(parts: list[str]) -> dict[str, str]:
@@ -132,6 +156,13 @@ def parse(line: str) -> Message | None:
             return Arrived(t=_req(f, "t"), target=_req(f, "target"), over=_req(f, "over"))
         if word == "DISARMED":
             return Disarmed(reason=_fields(rest).get("reason", ""))
+        if word == "FOCUSED":
+            f = _fields(rest)
+            return Focused(id=int(f["id"]), steps=int(f.get("steps", "0")))
+        if word == "FOCUS-FAILED":
+            f = _fields(rest)
+            return FocusFailed(id=int(f["id"]) if f.get("id", "-").isdigit() else None,
+                               reason=f.get("reason", ""))
         if word == "ERR":
             return Error(text=" ".join(rest))
     except (KeyError, ValueError):
@@ -159,3 +190,16 @@ def cmd_armstop(t: float) -> str:
 
 def cmd_disarm() -> str:
     return "DISARM"
+
+
+def cmd_speed(step: str) -> str:
+    """step: UP, DOWN or NORMAL."""
+    return f"SPEED {step}"
+
+
+def cmd_focus(dcs_id: int | None = None, unit_name: str | None = None) -> str:
+    """F2 on a unit; without an id, cancel. The unit name is the fallback if the id is unknown."""
+    if dcs_id is None:
+        return "FOCUS"
+    name = " ".join((unit_name or "").split())  # one line, single spaces
+    return f"FOCUS {dcs_id} {name}".rstrip()

@@ -21,10 +21,11 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 
 ## Results (spike finished)
 
-- **Speed control is keystrokes.** `LCtrl+Z`, `LAlt+Z` and `LShift+Z` are sent as scan codes to the focused DCS window. They work during playback, including while paused.
+- **Speed control is `DCS.dispatchDigitalAction`** (rounds 4–5, hook 0.2.0): `iCommandAccelerate` 53, `iCommandDecelerate` 191 and `iCommandNoAcceleration` 246 take the same steps as the keys, with no window focus. The ids come from a community-extracted table; `LoSetCommand` ignores them.
+- **Before that, speed control was keystrokes** (rounds 1–3, still used with hook 0.1.0). `LCtrl+Z`, `LAlt+Z` and `LShift+Z` are sent as scan codes to the focused DCS window. They work during playback, including while paused.
   - Above 1x, each `LCtrl+Z` adds 1x: 1 → 2 → 3 → 4. Below 1x, `LAlt+Z` halves the speed (0.5, 0.25). `LShift+Z` returns to 1x.
   - `Export.LoGetModelTimeAcceleration()` (`accel=`) reports the new speed immediately, even while paused.
-- **No scripted speed command.** The `iCommand*` ids for time acceleration aren't reachable from any Lua state, so `LoSetCommand` / `dispatchDigitalAction` can't be used.
+- **F2 on a given aircraft** (rounds 4–6): `dispatchDigitalAction(8)` acts as the F2 key, so the hook steps F2 until the camera, from `LoGetCameraPosition`, is on the aircraft. DCS id = Tacview id + 0xFFFFFF.
 - **Pause and resume** from the hook work. The speed is kept through a pause.
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
