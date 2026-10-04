@@ -7,15 +7,17 @@ The spike has two parts: a throwaway DCS hook and a console client. Running them
 3. Where is the mission start time, and does DCS model time line up with Tacview time?
 4. How precisely does a hook-side stop land at 4x?
 
+Rounds 1–3 answered those. Round 4 asks a new question: can the hook put DCS's F2 view on a given unit, and tell which unit the camera is on?
+
 Nothing is written to the DCS install folder. The hook only logs and answers on localhost UDP ports 47810 and 47811.
 
 ## Setup
 
 1. Copy `hook/spike/ReplayHelperSpike.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`. Create the `Hooks` folder if it doesn't exist, and use `DCS.openbeta` instead of `DCS` if that's your Saved Games folder.
 2. Start DCS. `Saved Games\DCS\Logs\dcs.log` should contain:
-   `REPLAYHELPER (Main): loaded spike-3 (callbacks registered)`
+   `REPLAYHELPER (Main): loaded spike-4 (callbacks registered)`
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
-4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-3`. Typing `s` then shows the live `STATE` line.
+4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-4`. Typing `s` then shows the live `STATE` line.
 
 ## Results (spike finished)
 
@@ -26,6 +28,37 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 - **Pause and resume** from the hook work. The speed is kept through a pause.
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
+
+## Round 4: put the F2 view on a unit (to do)
+
+**Goal:** when the app seeks to an event, show the event's aircraft in F2 view. DCS has no call for "view this unit" and none for "which unit is being viewed", so this round tests a workaround:
+
+- **Switch views with `LoSetCommand`.** A community-extracted table of command ids gives `iCommandViewAir` = 8 (F2), `iCommandViewSwitchForward` = 181 (next object) and `iCommandViewSwitchReverse` = 180 (previous). An external-camera project uses ids from the same table, so the numbers look right. Whether DCS accepts them from the hook during a replay is still untested.
+- **Work out the viewed unit from the camera.** In F2 the camera points at its unit. `CAM` takes `LoGetCameraPosition()` and `LoGetWorldObjects()` and picks the unit closest to the camera's line of sight. That assumes the camera's `x` vector points forward; `CAM` prints the angle from each axis to the nearest unit so this can be checked.
+- **`FOCUS`** combines the two: F2, then next object, one step every 0.15 s, until the camera is on the unit. It gives up after a full cycle or 80 steps, and reports every step.
+- **Speed without keystrokes?** The same table gives `iCommandAccelerate` = 53, `iCommandDecelerate` = 191 and `iCommandNoAcceleration` = 246. Round 3 never had these numbers.
+
+**Setup:**
+1. Copy the new `hook/spike/ReplayHelperSpike.lua` into `Saved Games\DCS\Scripts\Hooks`.
+2. Move `ReplayHelper.lua` out of that folder for this round. Both hooks use the same ports. Don't run the app.
+3. Restart DCS. `dcs.log` should contain `REPLAYHELPER (Main): loaded spike-4 (callbacks registered)`.
+4. Start `python tools\spike_client.py`, and play `LastMissionTrack.trk`.
+5. At once, type `arm 40` so the replay pauses at 0:40. That is before your A-10C is lost at 1:31.
+
+| # | Do | Look for |
+|---|----|----------|
+| 1 | `globals camera spectat getview setview`, then `globals view` | Any engine function or table that reports or sets the viewed object. The lines are long: just keep them in the log. |
+| 2 | Paused at 0:40, press **F2** yourself in DCS, then `cam` | `CAM aimed` should be your A-10C, the unit named on screen. Also note `CAM axes to nearest`: one axis should read close to 0 deg. |
+| 3 | Press **F2** again in DCS (next aircraft), then `cam` | `CAM aimed` follows to the aircraft now on screen. |
+| 4 | `objects` | Every aircraft with its DCS id. In the Tacview recording your A-10C is `0x5701` and the wingman `A-10C #001` is `0x5001`. Do the ids match? |
+| 5 | Press **F1** (cockpit), then `view 8`, then `view 181` twice, then `view 180` | DCS switches to F2 and steps through aircraft by itself. Each `VIEW-AFTER` names the new unit. Note anything that doesn't move. |
+| 6 | Press **F1**, then `focus 0x5001` (or `focus A-10C #001` if the ids differ) | `FOCUS-DONE ok`, with the wingman on screen. Then `focus 0x5701` back to your own aircraft. |
+| 7 | If `objects` lists a red aircraft: `focus <its id>` | Probably `FOCUS-DONE fail reason=cycled`, which would mean F2 only steps through your own side. Then try `view 26` (iCommandViewAll) or `view 24` (iCommandViewEnemies), and `focus` it again. |
+| 8 | `r` to resume at 1x, then `focus 0x5001` while it flies | Does it still land on the wingman while moving? |
+| 9 | `p`, then `cmd 53` twice, `cmd 191`, `cmd 246` | `LOCMD-AFTER … accel=` going 2, 3, then down, then 1. If nothing changes, try `cmdx 53` the same way. |
+| 10 | `q` | Upload `spike_session.log` and the `REPLAYHELPER` lines from `dcs.log`. Also say what you saw on screen in steps 2–8. |
+
+**Afterwards:** delete `ReplayHelperSpike.lua` from `Scripts\Hooks`, and run **Tools → Install / update DCS hook…** in the app to put `ReplayHelper.lua` back.
 
 ## Round 3: find the command ids, then get above 1x (done)
 

@@ -36,6 +36,13 @@ commands (case-insensitive):
   digital <id> [value]   DCS.dispatchDigitalAction
   globals [words]        list globals named like the words (default: accel decel) in each
                          Lua state -- this is where the iCommand ids come from
+  cam                    the camera and the unit it is aimed at (round 4)
+  objects [all]          aircraft (or all units) with their DCS ids
+  view <id> [value]      LoSetCommand a view command (8 = F2, 181 = next, 180 = previous),
+                         then show where the camera went
+  focus <unit>           F2, then next object until the camera is on the unit: a DCS id
+                         (decimal or 0x hex, as in `objects`) or part of its unit/group name.
+                         `focus` alone cancels
   key up|down|normal [count] [delay]
                          Windows only: send LCtrl+Z / LAlt+Z / LShift+Z to the DCS window.
                          delay (default 3 s) gives you time to click into DCS if focusing fails;
@@ -204,6 +211,14 @@ def handle(client: Client, text: str) -> bool:
         client.send(f"{prefix} " + " ".join(args))
     elif word == "globals":
         client.send("GLOBALS " + " ".join(args))
+    elif word == "cam":
+        client.send("CAM")
+    elif word == "objects" and len(args) <= 1:
+        client.send("OBJECTS " + " ".join(args))
+    elif word == "view" and 1 <= len(args) <= 2:
+        client.send("VIEW " + " ".join(args))
+    elif word == "focus":
+        client.send("FOCUS " + " ".join(args))
     elif word == "key" and args and args[0] in SPEED_KEYS:
         count = int(args[1]) if len(args) > 1 else 1
         delay = float(args[2]) if len(args) > 2 else 3.0

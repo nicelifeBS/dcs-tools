@@ -60,7 +60,7 @@ DCS gives Lua no way to set time acceleration. So the app presses DCS's own keys
 
 ```
 cd dcs-replay-helper
-uv run pytest                                          # 240 tests: hook (Lua 5.1 via lupa), protocol, link,
+uv run pytest                                          # 250 tests: hook (Lua 5.1 via lupa), protocol, link,
                                                        # speed, seek, Tacview, time sync, installer, window
 uv run python tools/fake_dcs.py                        # a stand-in for DCS + hook, on the same ports
 uv run replay-helper                                   # the app, in a second terminal

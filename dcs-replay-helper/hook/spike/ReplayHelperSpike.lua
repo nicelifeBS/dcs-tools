@@ -26,6 +26,16 @@
 --                            export and server states. The iCommand ids are engine-supplied
 --                            globals, not text in any Lua file, so this is how to find them.
 --
+-- Round 4 (spike-4): can the hook put the F2 view on a given unit, and tell which unit the
+-- camera is on? No API does either directly, so:
+--   CAM                      report the camera and the unit it is aimed at: the one closest to
+--                            the camera's line of sight (LoGetCameraPosition, LoGetWorldObjects)
+--   OBJECTS [all]            list aircraft (or all units) with their DCS ids, unit and group names
+--   VIEW <id> [value]        LoSetCommand a view command, then report CAM (VIEW-AFTER) 0.3 s later
+--   FOCUS <id|0xhex|name>    F2 view (iCommandViewAir, 8), then next object (iCommandViewSwitchForward,
+--                            181) until the camera is on that unit, a full cycle or 80 steps.
+--                            FOCUS on its own cancels.
+--
 -- STATE carries both the measured speed (speed=, model/real time ratio) and the speed DCS
 -- says it is commanding (accel=, Export.LoGetModelTimeAcceleration).
 --
@@ -35,7 +45,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "spike-3"
+local VERSION = "spike-4"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> client
@@ -46,6 +56,15 @@ local SPEED_WINDOW       = 0.5    -- real seconds per speed sample
 local STOPPED_RATIO      = 0.004  -- below this the sim is paused, not in slow motion (1/64x = 0.0156)
 local MAX_CMDS_PER_FRAME = 16
 local AFTER_DELAY        = 0.6    -- real seconds before LOCMD reports its effect
+
+-- View command ids (iCommand*), from a community-extracted table of LoSetCommand numbers.
+local VIEW_AIR        = 8      -- iCommandViewAir: F2
+local VIEW_NEXT       = 181    -- iCommandViewSwitchForward: next object
+local VIEW_DELAY      = 0.3    -- real seconds before VIEW reports where the camera went
+local FOCUS_DELAY     = 0.15   -- real seconds between FOCUS steps, for the camera to move
+local FOCUS_MAX_STEPS = 80
+local VIEW_MAX_DIST   = 5000   -- metres: a unit further from the camera is not the one viewed
+local MAX_OBJECT_LINES = 100
 
 -- -------------------------------------------------------------------------------------
 -- helpers
@@ -169,6 +188,8 @@ local sim = {
 
 local stop = { target = nil }
 local after = { at_rt = nil, label = nil }   -- pending LOCMD-AFTER report
+local view_after = { at_rt = nil, label = nil }   -- pending VIEW-AFTER report
+local focus = { target = nil }   -- a FOCUS in progress
 
 local function commanded_accel()
     local f = resolve_lo("LoGetModelTimeAcceleration")
@@ -200,6 +221,8 @@ local function reset_sim()
     sim.next_state_rt = 0
     stop.target = nil
     after.at_rt, after.label = nil, nil
+    view_after.at_rt, view_after.label = nil, nil
+    focus.target = nil
 end
 
 -- Speed is measured, never inferred from the keys or commands we sent.
@@ -458,6 +481,258 @@ local function find_globals(arg)
 end
 
 -- -------------------------------------------------------------------------------------
+-- camera and units (round 4)
+-- -------------------------------------------------------------------------------------
+local function vec(t)
+    if type(t) ~= "table" then return nil end
+    local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+    if x and y and z then return { x = x, y = y, z = z } end
+    return nil
+end
+
+local function vsub(a, b) return { x = a.x - b.x, y = a.y - b.y, z = a.z - b.z } end
+local function vdot(a, b) return a.x * b.x + a.y * b.y + a.z * b.z end
+local function vlen(a) return math.sqrt(vdot(a, a)) end
+
+local function angle_deg(a, b)
+    local la, lb = vlen(a), vlen(b)
+    if la == 0 or lb == 0 then return 180 end
+    local c = math.max(-1, math.min(1, vdot(a, b) / (la * lb)))
+    return math.deg(math.acos(c))
+end
+
+-- Where the camera and units were read: "Export" (this state) or "export-state" (through
+-- net.dostring_in, if this state can't see the functions).
+local view_source = { camera = nil, units = nil }
+
+-- In the export state the Lo* functions are globals. Both chunks return plain text.
+local CAMERA_IN_EXPORT = [[
+local c = type(LoGetCameraPosition) == "function" and LoGetCameraPosition()
+if type(c) ~= "table" or type(c.p) ~= "table" or type(c.x) ~= "table" then return "" end
+local y, z = c.y or c.x, c.z or c.x
+return string.format("%.3f %.3f %.3f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f",
+    c.p.x, c.p.y, c.p.z, c.x.x, c.x.y, c.x.z, y.x, y.y, y.z, z.x, z.y, z.z)
+]]
+local UNITS_IN_EXPORT = [[
+local objs = type(LoGetWorldObjects) == "function" and LoGetWorldObjects()
+if type(objs) ~= "table" then return "" end
+local function clean(v) return (tostring(v or ""):gsub("[\t\r\n]", " ")) end
+local out = {}
+for id, o in pairs(objs) do
+    local p, t = o.Position or {}, o.Type or {}
+    out[#out + 1] = table.concat({ tostring(id), tostring(t.level1 or 0),
+        tostring(o.Flags and o.Flags.Human or false), tostring(p.x or ""), tostring(p.y or ""),
+        tostring(p.z or ""), clean(o.Name), clean(o.Coalition), clean(o.UnitName), clean(o.GroupName) }, "\t")
+end
+return table.concat(out, "\n")
+]]
+
+local function nums(text)
+    local t = {}
+    for n in tostring(text or ""):gmatch("%S+") do t[#t + 1] = tonumber(n) end
+    return t
+end
+
+-- { p, x, y, z }: position and orientation vectors. Which of x/y/z points forward is one of
+-- the things this round checks; x is assumed.
+local function camera()
+    local cam = call((resolve_lo("LoGetCameraPosition")))
+    if type(cam) == "table" then
+        local c = { p = vec(cam.p), x = vec(cam.x), y = vec(cam.y), z = vec(cam.z) }
+        if c.p and c.x then
+            view_source.camera = "Export"
+            return c
+        end
+    end
+    local n = nums((dostring_in("export", CAMERA_IN_EXPORT)))
+    if #n ~= 12 then return nil end
+    view_source.camera = "export-state"
+    return { p = { x = n[1], y = n[2], z = n[3] }, x = { x = n[4], y = n[5], z = n[6] },
+             y = { x = n[7], y = n[8], z = n[9] }, z = { x = n[10], y = n[11], z = n[12] } }
+end
+
+local function by_id(a, b) return a.id < b.id end
+
+-- Units as a list of plain records; nil if no state can see LoGetWorldObjects.
+local function units()
+    local list = {}
+    local objs = call((resolve_lo("LoGetWorldObjects")))
+    if type(objs) == "table" then
+        for id, o in pairs(objs) do
+            if type(o) == "table" and tonumber(id) then
+                local t = type(o.Type) == "table" and o.Type or {}
+                list[#list + 1] = {
+                    id = tonumber(id), name = o.Name, unit = o.UnitName, group = o.GroupName,
+                    coalition = o.Coalition, air = t.level1 == 1,
+                    human = type(o.Flags) == "table" and o.Flags.Human or false,
+                    pos = vec(o.Position),
+                }
+            end
+        end
+        view_source.units = "Export"
+        table.sort(list, by_id)
+        return list
+    end
+    local text = dostring_in("export", UNITS_IN_EXPORT)
+    if type(text) ~= "string" or text == "" then return nil end
+    for line in text:gmatch("[^\n]+") do
+        local f = {}
+        for field in (line .. "\t"):gmatch("([^\t]*)\t") do f[#f + 1] = field end
+        if tonumber(f[1]) then
+            list[#list + 1] = {
+                id = tonumber(f[1]), air = tonumber(f[2]) == 1, human = f[3] == "true",
+                pos = vec({ x = f[4], y = f[5], z = f[6] }),
+                name = f[7], coalition = f[8], unit = f[9], group = f[10],
+            }
+        end
+    end
+    view_source.units = "export-state"
+    table.sort(list, by_id)
+    return list
+end
+
+local function describe(u)
+    if not u then return "none" end
+    local s = string.format("id=%d/0x%x %s unit=%q group=%q %s air=%s human=%s",
+        u.id, u.id, tostring(u.name), tostring(u.unit), tostring(u.group), tostring(u.coalition),
+        tostring(u.air), tostring(u.human))
+    if u.dist then s = s .. string.format(" dist=%.1f off=%.1f", u.dist, u.off) end
+    return oneline(s)
+end
+
+-- Distance and angle off the camera's forward axis for every unit near the camera. Returns
+-- the list sorted by angle (the first is the unit aimed at) and the nearest unit.
+local function sight(cam, list)
+    local near, nearest = {}, nil
+    for _, u in ipairs(list) do
+        if u.pos then
+            local d = vsub(u.pos, cam.p)
+            local dist = vlen(d)
+            if dist <= VIEW_MAX_DIST then
+                local r = {}
+                for k, v in pairs(u) do r[k] = v end
+                r.dist, r.off, r.d = dist, angle_deg(d, cam.x), d
+                near[#near + 1] = r
+                if not nearest or dist < nearest.dist then nearest = r end
+            end
+        end
+    end
+    table.sort(near, function(a, b)
+        if a.off ~= b.off then return a.off < b.off end
+        return a.dist < b.dist
+    end)
+    return near, nearest
+end
+
+-- The unit the camera is aimed at, or nil and a reason.
+local function viewed()
+    local cam = camera()
+    if not cam then return nil, "no camera position (LoGetCameraPosition)" end
+    local list = units()
+    if not list then return nil, "no units (LoGetWorldObjects)" end
+    local near = sight(cam, list)
+    return near[1], nil, cam
+end
+
+local function report_cam(prefix)
+    local cam = camera()
+    if not cam then
+        report(prefix .. " unavailable: no camera position (LoGetCameraPosition)")
+        return
+    end
+    local list = units()
+    if not list then
+        report(prefix .. " unavailable: no units (LoGetWorldObjects)")
+        return
+    end
+    local near, nearest = sight(cam, list)
+    report(string.format("%s p=(%.1f,%.1f,%.1f) x=(%.3f,%.3f,%.3f) units=%d near=%d via=%s/%s",
+        prefix, cam.p.x, cam.p.y, cam.p.z, cam.x.x, cam.x.y, cam.x.z, #list, #near,
+        tostring(view_source.camera), tostring(view_source.units)))
+    report(prefix .. " aimed " .. describe(near[1]))
+    report(prefix .. " nearest " .. describe(nearest))
+    for i = 2, math.min(3, #near) do report(prefix .. " next " .. describe(near[i])) end
+    -- Which axis points at the nearest unit tells which one is forward.
+    if nearest and cam.y and cam.z then
+        report(string.format("%s axes to nearest: x=%.1f y=%.1f z=%.1f deg", prefix,
+            angle_deg(nearest.d, cam.x), angle_deg(nearest.d, cam.y), angle_deg(nearest.d, cam.z)))
+    end
+end
+
+local function set_command(id, value)
+    local f, where = resolve_lo("LoSetCommand")
+    if not f then return false, "no LoSetCommand" end
+    local ok, err
+    if value then ok, err = pcall(f, id, value) else ok, err = pcall(f, id) end
+    return ok, err, where
+end
+
+local function find_unit(arg, list)
+    local hex = arg:match("^0[xX](%x+)$")
+    local id = hex and tonumber(hex, 16) or (arg:match("^%d+$") and tonumber(arg))
+    if id then
+        for _, u in ipairs(list) do
+            if u.id == id then return u end
+        end
+        return nil
+    end
+    local want = arg:lower()
+    local function has(s) return type(s) == "string" and s:lower():find(want, 1, true) ~= nil end
+    for _, u in ipairs(list) do
+        if u.air and (has(u.unit) or has(u.group) or has(u.name)) then return u end
+    end
+    for _, u in ipairs(list) do
+        if has(u.unit) or has(u.group) or has(u.name) then return u end
+    end
+    return nil
+end
+
+local function focus_done(result)
+    local r = call(dcs_fn("getRealTime")) or focus.started_rt
+    report(string.format("FOCUS-DONE %s target=0x%x steps=%d time=%.2f visited=%s", result,
+        focus.target, focus.steps, r - focus.started_rt,
+        #focus.visited > 0 and table.concat(focus.visited, ",") or "-"))
+    focus.target = nil
+end
+
+local function focus_tick(r)
+    if not focus.target or r < focus.next_rt then return end
+    local u, why = viewed()
+    if why then
+        focus_done("fail reason=" .. why:gsub("%s", "_"))
+        return
+    end
+    report(string.format("FOCUS-STEP %d viewed %s", focus.steps, describe(u)))
+    local id = u and u.id
+    if id == focus.target then
+        focus_done("ok")
+        return
+    end
+    if id then
+        if focus.first == nil then
+            focus.first = id
+        elseif id == focus.first then
+            focus_done("fail reason=cycled")
+            return
+        end
+        focus.visited[#focus.visited + 1] = string.format("0x%x", id)
+    else
+        focus.visited[#focus.visited + 1] = "none"
+    end
+    if focus.steps >= FOCUS_MAX_STEPS then
+        focus_done("fail reason=max_steps")
+        return
+    end
+    local ok, err = set_command(VIEW_NEXT)
+    if not ok then
+        focus_done("fail reason=LoSetCommand_" .. oneline(err):gsub("%s", "_"))
+        return
+    end
+    focus.steps = focus.steps + 1
+    focus.next_rt = r + FOCUS_DELAY
+end
+
+-- -------------------------------------------------------------------------------------
 -- commands
 -- -------------------------------------------------------------------------------------
 -- "<id>" or "<id> <value>", nothing else. A loose match once turned the memory address
@@ -575,6 +850,82 @@ handlers.GLOBALS = function(arg)
     find_globals(arg)
 end
 
+handlers.CAM = function()
+    report_cam("CAM")
+end
+
+handlers.OBJECTS = function(arg)
+    local list = units()
+    if not list then
+        report("OBJECTS unavailable: no units (LoGetWorldObjects)")
+        return
+    end
+    local all = tostring(arg or ""):lower() == "all"
+    local cam = camera()
+    local shown = {}
+    for _, u in ipairs(list) do
+        if all or u.air then
+            if cam and u.pos then
+                u.dist = vlen(vsub(u.pos, cam.p))
+                u.off = angle_deg(vsub(u.pos, cam.p), cam.x)
+            end
+            shown[#shown + 1] = u
+        end
+    end
+    report(string.format("OBJECTS units=%d listed=%d (%s) via=%s", #list, #shown,
+        all and "all" or "aircraft", tostring(view_source.units)))
+    for i, u in ipairs(shown) do
+        if i > MAX_OBJECT_LINES then
+            report(string.format("OBJECTS ... %d more", #shown - MAX_OBJECT_LINES))
+            break
+        end
+        report("OBJ " .. describe(u))
+    end
+    report("OBJECTS end")
+end
+
+handlers.VIEW = function(arg)
+    local id, value = parse_cmd_args(arg)
+    if not id then
+        send("ERR VIEW needs a command id")
+        return
+    end
+    local ok, err, where = set_command(id, value)
+    report(string.format("VIEW id=%d value=%s via=%s ok=%s err=%s", id, tostring(value),
+        tostring(where), tostring(ok), oneline(err)))
+    if ok then
+        view_after.at_rt = (call(dcs_fn("getRealTime")) or 0) + VIEW_DELAY
+        view_after.label = string.format("VIEW-AFTER id=%d", id)
+    end
+end
+
+handlers.FOCUS = function(arg)
+    arg = tostring(arg or ""):match("^%s*(.-)%s*$")
+    if arg == "" then
+        if focus.target then focus_done("cancelled") else send("FOCUS nothing to cancel") end
+        return
+    end
+    local list = units()
+    if not list then
+        report("FOCUS unavailable: no units (LoGetWorldObjects)")
+        return
+    end
+    local u = find_unit(arg, list)
+    if not u then
+        report("FOCUS no unit matches " .. oneline(arg))
+        return
+    end
+    local ok, err = set_command(VIEW_AIR)
+    if not ok then
+        report("FOCUS unavailable: LoSetCommand failed: " .. oneline(err))
+        return
+    end
+    local r = call(dcs_fn("getRealTime")) or 0
+    focus.target, focus.steps, focus.first, focus.visited = u.id, 0, nil, {}
+    focus.started_rt, focus.next_rt = r, r + FOCUS_DELAY
+    report("FOCUS start " .. describe(u))
+end
+
 local function dispatch(line)
     line = tostring(line):gsub("%s+$", "")
     local word, arg = line:match("^(%S+)%s*(.*)$")
@@ -618,6 +969,13 @@ local function on_frame()
     local r = call(dcs_fn("getRealTime"))
     if type(r) ~= "number" then return end
     measure(m, r)
+
+    if view_after.at_rt and r >= view_after.at_rt then
+        local label = view_after.label
+        view_after.at_rt, view_after.label = nil, nil
+        report_cam(label)
+    end
+    focus_tick(r)
 
     if after.at_rt and r >= after.at_rt then
         -- The measured speed needs a full sample window at the new rate to settle, so raw is
