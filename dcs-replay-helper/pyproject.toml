@@ -1,6 +1,6 @@
 [project]
 name = "dcs-replay-helper"
-version = "1.0.0"
+version = "1.1.0"
 description = "Drive DCS track replays from Tacview bookmarks: seek forward with a speed cap and pre/post-roll"
 readme = "README.md"
 requires-python = ">=3.11"
