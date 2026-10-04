@@ -33,13 +33,15 @@
 --   OBJECTS [all]            list aircraft (or all units) with their DCS ids, unit and group names
 --   VIEW [route] <id> [value]
 --                            send a view command, then report CAM (VIEW-AFTER) 0.3 s later
---   FOCUS <id|0xhex|name> [route] [prev]
---                            F2 view (iCommandViewAir, 8), then next (iCommandViewSwitchForward,
---                            181) or previous (180) object until the camera is on that unit, a
---                            full cycle or 80 steps. FOCUS on its own cancels.
+--   FOCUS <id|0xhex|name> [route] [fast]
+--                            iCommandViewAir (8) until the camera is on that unit, a full cycle
+--                            or 80 steps: from the cockpit it gives F2 on the player's aircraft,
+--                            in F2 the next aircraft. One step every 0.15 s, or 0.05 s with fast.
+--                            FOCUS on its own cancels.
 --   route: how a command is sent. digital (default): DCS.dispatchDigitalAction; export:
---   LoSetCommand in the export state; hooks: Export.LoSetCommand here. Round 4 found that
---   hooks does nothing to the view during a replay, while digital and export switch to F2.
+--   LoSetCommand in the export state; hooks: Export.LoSetCommand here. In a replay, hooks does
+--   nothing to the view; digital and export switch views. Next/previous object (181/180) do
+--   nothing by any route (round 5).
 --
 -- A unit counts as viewed only when it is within VIEW_MAX_OFF degrees of the camera's forward
 -- axis and the camera is not inside another unit (its cockpit).
@@ -53,7 +55,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "spike-5"
+local VERSION = "spike-6"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> client
@@ -66,14 +68,13 @@ local MAX_CMDS_PER_FRAME = 16
 local AFTER_DELAY        = 0.6    -- real seconds before LOCMD reports its effect
 
 -- View command ids (iCommand*), from a community-extracted table of LoSetCommand numbers.
-local VIEW_AIR        = 8      -- iCommandViewAir: F2
-local VIEW_NEXT       = 181    -- iCommandViewSwitchForward: next object
-local VIEW_PREV       = 180    -- iCommandViewSwitchReverse: previous object
+local VIEW_AIR        = 8      -- iCommandViewAir: F2, and in F2 the next aircraft (round 5)
 local VIEW_DELAY      = 0.3    -- real seconds before VIEW reports where the camera went
 local FOCUS_DELAY     = 0.15   -- real seconds between FOCUS steps, for the camera to move
+local FOCUS_FAST_DELAY = 0.05  -- the same with FOCUS ... fast
 local FOCUS_MAX_STEPS = 80
 local VIEW_MAX_DIST   = 5000   -- metres: a unit further from the camera is not the one viewed
-local VIEW_MAX_OFF    = 3      -- degrees: F2 points straight at its unit (0.0-0.1 in round 4)
+local VIEW_MAX_OFF    = 5      -- degrees: F2 points at its unit (0.0 paused, up to 1.6 flying)
 local INSIDE_DIST     = 10     -- metres: a camera this close to a unit is in its cockpit
 local MAX_OBJECT_LINES = 100
 
@@ -643,13 +644,15 @@ local function aimed_unit(near, nearest)
     return best
 end
 
--- The unit the camera is viewing (nil if none), or nil and a reason it can't be told.
+-- The unit the camera is viewing (nil if none), or nil and a reason it can't be told. The
+-- third value is the closest candidate, for the log.
 local function viewed()
     local cam = camera()
     if not cam then return nil, "no camera position (LoGetCameraPosition)" end
     local list = units()
     if not list then return nil, "no units (LoGetWorldObjects)" end
-    return aimed_unit(sight(cam, list)), nil
+    local near, nearest = sight(cam, list)
+    return aimed_unit(near, nearest), nil, near[1]
 end
 
 local function report_cam(prefix)
@@ -741,12 +744,13 @@ end
 
 local function focus_tick(r)
     if not focus.target or r < focus.next_rt then return end
-    local u, why = viewed()
+    local u, why, best = viewed()
     if why then
         focus_done("fail reason=" .. why:gsub("%s", "_"))
         return
     end
-    report(string.format("FOCUS-STEP %d %s viewed %s", focus.steps, focus.route, describe(u)))
+    report(string.format("FOCUS-STEP %d %s viewed %s", focus.steps, focus.route,
+        u and describe(u) or ("none, best " .. describe(best))))
     local id = u and u.id
     if id == focus.target then
         focus_done("ok")
@@ -767,13 +771,13 @@ local function focus_tick(r)
         focus_done("fail reason=max_steps")
         return
     end
-    local ok, err = set_command(focus.step_cmd, nil, focus.route)
+    local ok, err = set_command(VIEW_AIR, nil, focus.route)
     if not ok then
         focus_done("fail reason=command_" .. oneline(err):gsub("%s", "_"))
         return
     end
     focus.steps = focus.steps + 1
-    focus.next_rt = r + FOCUS_DELAY
+    focus.next_rt = r + focus.delay
 end
 
 -- -------------------------------------------------------------------------------------
@@ -956,14 +960,14 @@ handlers.FOCUS = function(arg)
         report("FOCUS unavailable: no units (LoGetWorldObjects)")
         return
     end
-    -- Trailing words: a route and/or "prev", in any order.
-    local route, step_cmd = DEFAULT_ROUTE, VIEW_NEXT
+    -- Trailing words: a route and/or "fast", in any order.
+    local route, delay = DEFAULT_ROUTE, FOCUS_DELAY
     while true do
         local head, word = arg:match("^(.-)%s+(%a+)$")
         if not word then break end
         local w = word:lower()
         if ROUTES[w] then route = w
-        elseif w == "prev" then step_cmd = VIEW_PREV
+        elseif w == "fast" then delay = FOCUS_FAST_DELAY
         else break end
         arg = head
     end
@@ -972,24 +976,11 @@ handlers.FOCUS = function(arg)
         report("FOCUS no unit matches " .. oneline(arg))
         return
     end
-    local now_viewed = viewed()
     local r = call(dcs_fn("getRealTime")) or 0
     focus.target, focus.steps, focus.first, focus.visited = u.id, 0, nil, {}
-    focus.route, focus.step_cmd = route, step_cmd
-    focus.started_rt, focus.next_rt = r, r
-    report(string.format("FOCUS start %s %s target %s", route, step_cmd == VIEW_PREV and "prev" or "next",
-        describe(u)))
-    if now_viewed then
-        -- Already on a unit: pressing F2 again would step anyway, so start stepping straight away.
-        return
-    end
-    local ok, err = set_command(VIEW_AIR, nil, route)
-    if not ok then
-        focus.target = nil
-        report("FOCUS unavailable: command failed: " .. oneline(err))
-        return
-    end
-    focus.next_rt = r + FOCUS_DELAY
+    focus.route, focus.delay = route, delay
+    focus.started_rt, focus.next_rt = r, r  -- the first step runs this frame
+    report(string.format("FOCUS start %s every %.2fs target %s", route, delay, describe(u)))
 end
 
 local function dispatch(line)

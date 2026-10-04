@@ -15,9 +15,9 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 
 1. Copy `hook/spike/ReplayHelperSpike.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`. Create the `Hooks` folder if it doesn't exist, and use `DCS.openbeta` instead of `DCS` if that's your Saved Games folder.
 2. Start DCS. `Saved Games\DCS\Logs\dcs.log` should contain:
-   `REPLAYHELPER (Main): loaded spike-5 (callbacks registered)`
+   `REPLAYHELPER (Main): loaded spike-6 (callbacks registered)`
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
-4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-5`. Typing `s` then shows the live `STATE` line.
+4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-6`. Typing `s` then shows the live `STATE` line.
 
 ## Results (spike finished)
 
@@ -29,11 +29,35 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
 
-## Round 5: focus without keystrokes (to do)
+## Round 6: focus by stepping F2 (to do)
+
+Round 5 showed that command 8 (`iCommandViewAir`), sent by `digital` or `export`, does what pressing F2 does: from the cockpit it gives F2 on your own aircraft, and in F2 it steps to the next aircraft. Next/previous object (181/180) do nothing. `spike-6` has `focus` step with 8, and counts a unit as viewed within 5° (the camera trails by up to 1.6° in flight).
+
+**Setup:** as before, with the new `ReplayHelperSpike.lua` (restart DCS: `loaded spike-6`) and the new client. `arm 40` at once.
+
+| # | Do | Look for |
+|---|----|----------|
+| 1 | Press **F1**, then `focus 0x1005000` | `FOCUS-DONE ok … steps=2`: F2 on your aircraft, then the wingman, who is on screen. |
+| 2 | `focus 0x1005400` | Steps on through the C-17s to C-17 #004: `FOCUS-DONE ok … steps=4`. |
+| 3 | Press **F1**, then `focus 0x1005000 fast` | Still `ok`, with no overshoot past the wingman, at a step every 0.05 s. If it overshoots, the camera needs longer than that to move. |
+| 4 | `r`, then `focus 0x1005100` while it flies, then `p` | `ok` on C-17 #001 while moving. |
+| 5 | Optional, with a track that has red aircraft: `objects`, then `focus <red id>` | Does stepping F2 reach the other side, or end `reason=cycled`? |
+| 6 | `q` | Upload `spike_session.log`. |
+
+## Round 5: focus without keystrokes (done)
+
+**Results:**
+- **Command 8 steps F2.** `view 8` from the cockpit gave F2 on the player's aircraft; `view 8` in F2 stepped to the next aircraft (wingman, C-17 #001, C-17 #002), as the F2 key does.
+- **Next/previous object (181/180) do nothing**, by the `digital` and the `export` route alike. `focus` stepped with 181, so it never moved.
+- **Speed works through `digital`:** `digital 53` took 1x to 2x, `digital 191` 2x back to 1x and then 0.5, 0.25 and 0.125, and `digital 246` back to 1x. The same steps as the keys, with no window focus. LoSetCommand still does nothing for speed.
+- **In flight, F2 trails its aircraft by up to 1.6°** (0.0 when paused).
+- **In the cockpit, `cam` now says `aimed none`.**
+
+**What round 5 tested, and its steps:**
 
 Round 4 showed that the hook can switch to F2 through `DCS.dispatchDigitalAction` or through `LoSetCommand` in the export state, but not through `LoSetCommand` in its own state. `spike-5` sends view commands by those routes (`digital` by default, or `export`), and `FOCUS` now uses them. It also counts a unit as viewed only when it is within 3° of straight ahead and the camera is not inside another unit. Round 4's first `kfocus` stopped on the wingman while the camera was still in the cockpit.
 
-**Setup:** as in round 4, with the new `ReplayHelperSpike.lua` (restart DCS: `loaded spike-5`) and the new client. `arm 40` at once.
+**Setup:** as in round 4, with `spike-5`.
 
 | # | Do | Look for |
 |---|----|----------|

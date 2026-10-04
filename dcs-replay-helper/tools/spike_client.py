@@ -43,10 +43,10 @@ commands (case-insensitive):
                          send a view command (8 = F2, 181 = next, 180 = previous), then show
                          where the camera went. route: digital (default, dispatchDigitalAction),
                          export (LoSetCommand in the export state) or hooks (does nothing in a replay)
-  focus <unit> [route] [prev]
-                         F2, then next (or previous) object until the camera is on the unit: a
-                         DCS id (decimal or 0x hex, as in `objects`) or part of its unit/group
-                         name. `focus` alone cancels
+  focus <unit> [route] [fast]
+                         press F2 (command 8) until the camera is on the unit: a DCS id (decimal
+                         or 0x hex, as in `objects`) or part of its unit/group name. fast: a step
+                         every 0.05 s instead of 0.15 s. `focus` alone cancels
   key f1|f2|ctrl+f2|... [count] [delay]
                          Windows only: press a view key in DCS, then show `cam`
   kfocus <id> [key] [max]

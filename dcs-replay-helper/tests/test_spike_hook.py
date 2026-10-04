@@ -21,7 +21,7 @@ def hook() -> Hook:
 
 
 def test_loads_and_registers_callbacks(hook: Hook) -> None:
-    assert any("loaded spike-5 (callbacks registered)" in line for line in hook.logs())
+    assert any("loaded spike-6 (callbacks registered)" in line for line in hook.logs())
 
 
 def test_silent_outside_a_mission(hook: Hook) -> None:
@@ -31,7 +31,7 @@ def test_silent_outside_a_mission(hook: Hook) -> None:
 
 def test_state_after_mission_load(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.sent()[0] == "HELLO spike-5"
+    assert hook.sent()[0] == "HELLO spike-6"
     hook.run(0.5)
     state = hook.last_state()
     assert state["start_tod"] == "59400"
@@ -42,7 +42,7 @@ def test_state_after_mission_load(hook: Hook) -> None:
 
 def test_ping(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.cmd("PING") == ["PONG spike-5"]
+    assert hook.cmd("PING") == ["PONG spike-6"]
 
 
 def test_pause_resume(hook: Hook) -> None:
@@ -94,7 +94,7 @@ def test_disarm(hook: Hook) -> None:
 def test_probe_survives_minimal_environment(hook: Hook) -> None:
     hook.load_mission()
     replies = hook.cmd("PROBE")
-    assert replies[0] == "PROBE begin spike-5"
+    assert replies[0] == "PROBE begin spike-6"
     assert replies[-1] == "PROBE end"
     assert "PROBE mission start_time=59400 date=2018-02-01 theatre=Caucasus" in replies
     assert "PROBE global LoSetCommand nil" in replies
@@ -258,11 +258,11 @@ def test_command_value_is_optional_number(hook: Hook) -> None:
     assert hook.mock.locmd[1] == 52 and hook.mock.locmd[2] == 0.25
 
 
-# Round 4: a mock world for the camera, behaving as DCS did in a replay. The camera starts in
-# the lead's cockpit. F2 (8) moves it 30 m behind a blue aircraft, looking along +x; next (181)
-# and previous (180) step through the blue aircraft in id order. dispatchDigitalAction and
-# LoSetCommand in the export state switch views; Export.LoSetCommand in the hooks state is
-# accepted but does nothing. The two blue A-10Cs fly 40 m apart; a red aircraft and a ground
+# Rounds 4-5: a mock world for the camera, behaving as DCS did in a replay. The camera starts
+# in the lead's cockpit. F2 (8) moves it 30 m behind the player's aircraft, looking along +x;
+# in F2, 8 steps to the next blue aircraft in id order. Next/previous object (181/180) do
+# nothing. dispatchDigitalAction and LoSetCommand in the export state switch views;
+# Export.LoSetCommand in the hooks state is accepted but does nothing. The two blue A-10Cs fly 40 m apart; a red aircraft and a ground
 # unit are not in the F2 cycle.
 WORLD = """
 MOCK.units = {
@@ -287,14 +287,11 @@ MOCK.cam = { p = { x = 1001, y = 500, z = 40 }, x = AXES.x, y = AXES.y, z = AXES
 local function switch(id)
     table.insert(MOCK.commands, id)
     local n = #MOCK.cycle
-    if id == 8 and MOCK.view == nil then
+    if id ~= 8 then return end
+    if MOCK.view == nil then
         MOCK.view = 2  -- the player's own aircraft
-    elseif id == 8 or id == 181 then
-        MOCK.view = MOCK.view % n + 1
-    elseif id == 180 then
-        MOCK.view = (MOCK.view - 2) % n + 1
     else
-        return
+        MOCK.view = MOCK.view % n + 1
     end
     look_at(MOCK.cycle[MOCK.view])
 end
@@ -375,30 +372,41 @@ def test_view_from_the_hooks_state_does_nothing(world: Hook) -> None:
     assert world.cmd("VIEW digital x") == ["ERR VIEW needs a command id"]
 
 
-def test_focus_steps_to_the_target(world: Hook) -> None:
+def test_next_object_does_nothing(world: Hook) -> None:
+    world.cmd("VIEW 8")
+    world.run(0.5)
+    world.cmd("VIEW 181")
+    world.clear()
+    world.run(0.5)
+    assert any(s.startswith("VIEW-AFTER digital id=181 aimed id=16799488/0x1005700") for s in world.sent())
+
+
+def test_focus_steps_with_f2_to_the_target(world: Hook) -> None:
     start = world.cmd("FOCUS 0x1005000")
-    assert start[0].startswith("FOCUS start digital next target id=16797696/0x1005000")
+    assert start[0].startswith("FOCUS start digital every 0.15s target id=16797696/0x1005000")
+    assert start[1].startswith("FOCUS-STEP 0 digital viewed none, best id=16777472/0x1000100")  # cockpit
     steps = focus_lines(world)
-    assert steps[0].startswith("FOCUS-STEP 0 digital viewed id=16799488/0x1005700")  # F2: own aircraft
-    assert steps[1].startswith("FOCUS-STEP 1 digital viewed id=16797696/0x1005000")
-    assert steps[2].startswith("FOCUS-DONE ok target=0x1005000 steps=1 time=0.3")
-    assert steps[2].endswith("visited=0x1005700")
-    assert list(world.mock.commands.values()) == [8, 181]
+    assert steps[0].startswith("FOCUS-STEP 1 digital viewed id=16799488/0x1005700")  # F2: own aircraft
+    assert steps[1].startswith("FOCUS-STEP 2 digital viewed id=16797696/0x1005000")
+    assert steps[2].startswith("FOCUS-DONE ok target=0x1005000 steps=2 time=0.3")
+    assert steps[2].endswith("visited=none,0x1005700")
+    assert list(world.mock.commands.values()) == [8, 8]
 
 
-def test_focus_through_the_export_state_and_backwards(world: Hook) -> None:
-    assert world.cmd("FOCUS A-10C #001 prev export")[0].startswith("FOCUS start export prev target id=16797696")
-    assert focus_lines(world)[-1].startswith("FOCUS-DONE ok target=0x1005000 steps=1")
-    assert list(world.mock.commands.values()) == [8, 180]
+def test_focus_fast_through_the_export_state(world: Hook) -> None:
+    assert world.cmd("FOCUS A-10C #001 fast export")[0].startswith(
+        "FOCUS start export every 0.05s target id=16797696")
+    assert focus_lines(world)[-1].startswith("FOCUS-DONE ok target=0x1005000 steps=2 time=0.1")
+    assert list(world.mock.commands.values()) == [8, 8]
 
 
-def test_focus_starts_stepping_when_a_unit_is_already_in_view(world: Hook) -> None:
+def test_focus_steps_on_from_the_unit_in_view(world: Hook) -> None:
     world.cmd("FOCUS 0x1005000")
     focus_lines(world)
     world.lua.execute("MOCK.commands = {}")
-    lines = world.cmd("FOCUS fubar") + focus_lines(world)  # on the wingman already: no F2, just next
+    lines = world.cmd("FOCUS fubar") + focus_lines(world)  # from the wingman, one step on
     assert lines[-1].startswith("FOCUS-DONE ok target=0x1005700 steps=1")
-    assert list(world.mock.commands.values()) == [181]
+    assert list(world.mock.commands.values()) == [8]
     world.lua.execute("MOCK.commands = {}")
     lines = world.cmd("FOCUS fubar")  # already there: done in the same frame
     assert lines[-1].startswith("FOCUS-DONE ok target=0x1005700 steps=0")
@@ -406,15 +414,15 @@ def test_focus_starts_stepping_when_a_unit_is_already_in_view(world: Hook) -> No
 
 
 def test_focus_by_decimal_id_and_unknown_name(world: Hook) -> None:
-    assert world.cmd("FOCUS 16797696")[0].startswith("FOCUS start digital next target id=16797696/0x1005000")
+    assert world.cmd("FOCUS 16797696")[0].startswith("FOCUS start digital every 0.15s target id=16797696")
     assert world.cmd("FOCUS nobody") == ["FOCUS no unit matches nobody"]
 
 
 def test_focus_gives_up_after_a_full_cycle(world: Hook) -> None:
-    world.cmd("FOCUS Frogfoot")  # red: not in the F2 cycle
-    done = [s for s in focus_lines(world, 2.0) if s.startswith("FOCUS-DONE")]
-    assert done == ["FOCUS-DONE fail reason=cycled target=0x1006000 steps=2 time=0.45 "
-                    "visited=0x1005700,0x1005000"]
+    lines = world.cmd("FOCUS Frogfoot") + focus_lines(world, 2.0)  # red: not in the F2 cycle
+    done = [s for s in lines if s.startswith("FOCUS-DONE")]
+    assert done == ["FOCUS-DONE fail reason=cycled target=0x1006000 steps=3 time=0.45 "
+                    "visited=none,0x1005700,0x1005000"]
 
 
 def test_focus_through_the_hooks_state_never_gets_there(world: Hook) -> None:
@@ -427,7 +435,7 @@ def test_focus_through_the_hooks_state_never_gets_there(world: Hook) -> None:
 
 def test_focus_can_be_cancelled(world: Hook) -> None:
     world.cmd("FOCUS Frogfoot")
-    assert world.cmd("FOCUS")[0].startswith("FOCUS-DONE cancelled target=0x1006000 steps=0")
+    assert world.cmd("FOCUS")[0].startswith("FOCUS-DONE cancelled target=0x1006000 steps=1")
     assert world.cmd("FOCUS") == ["FOCUS nothing to cancel"]
 
 
@@ -435,8 +443,7 @@ def test_focus_without_a_camera(hook: Hook) -> None:
     hook.lua.execute(WORLD + "Export.LoGetCameraPosition = nil; net = nil")
     hook.load_mission()
     assert hook.cmd("CAM") == ["CAM unavailable: no camera position (LoGetCameraPosition)"]
-    hook.cmd("FOCUS 0x1005000")
-    done = [s for s in focus_lines(hook, 0.5) if s.startswith("FOCUS-DONE")]
+    done = [s for s in hook.cmd("FOCUS 0x1005000") if s.startswith("FOCUS-DONE")]
     assert done[0].startswith("FOCUS-DONE fail reason=no_camera_position_(LoGetCameraPosition)")
 
 
@@ -474,7 +481,6 @@ def test_camera_and_units_through_the_export_state(hook: Hook) -> None:
     assert replies[0].endswith("units=4 near=3 via=export-state/export-state")
     assert replies[1] == "CAM aimed none"  # in the cockpit
     assert 'unit="fubar 1-1" group="Player" Enemies air=true human=true' in hook.cmd("OBJECTS")[2]
-    hook.cmd("FOCUS A-10C #001")
-    lines = focus_lines(hook)
-    assert lines[1].startswith('FOCUS-STEP 1 digital viewed id=16797696/0x1005000 A-10C_2 unit="A-10C #001"')
+    lines = hook.cmd("FOCUS A-10C #001") + focus_lines(hook)
+    assert lines[3].startswith('FOCUS-STEP 2 digital viewed id=16797696/0x1005000 A-10C_2 unit="A-10C #001"')
     assert lines[-1].startswith("FOCUS-DONE ok target=0x1005000")
