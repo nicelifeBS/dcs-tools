@@ -50,7 +50,7 @@ from ..timesync import SyncResult, SyncSettings, compute, fine_for_sync, fmt_tz
 PAST_COLOR = QColor("#9e9e9e")
 ERROR_STYLE = "color: #c62828;"
 MIN_LEAD_S = 0.2  # matches seek.MIN_LEAD_S: a pre-roll point closer than this is behind
-PAST_KEEP_S = 5.0  # an event stays listed (grayed) this long after it happens, to sync on it
+PAST_KEEP_S = 1.0  # an event stays listed (grayed) this long after it happens
 COLLAPSE_MS = 400  # how long past events take to scroll out of the list
 
 # Text color by side, as (light theme, dark theme): toned down so they read on either background.
@@ -345,8 +345,9 @@ class EventPanel(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._search_changed)
         self.show_past = QCheckBox("Show past events")
-        self.show_past.setToolTip("Keep the events the replay has passed in the list, grayed out. "
-                                  f"Otherwise they scroll away {PAST_KEEP_S:g} s after they happen.")
+        self.show_past.setToolTip("Keep the events the replay has passed in the list, grayed out, "
+                                  "to sync on one. Otherwise they scroll away "
+                                  f"{PAST_KEEP_S:g} s after they happen.")
         self.show_past.setChecked(bool(settings.get("show_past_events")) if settings else False)
         self.show_past.toggled.connect(self._show_past_toggled)
         search_row = QHBoxLayout()

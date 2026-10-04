@@ -117,7 +117,7 @@ def test_panel_loads_and_requests_seek(qapp) -> None:
     assert "2 bookmarks, 5 events" in panel.file_label.text()
     assert panel.proxy.rowCount() == 2
 
-    panel.set_now(70.0, 5.0, 59400)  # Running in (67.95) is behind now; idiot (88.01) is not
+    panel.set_now(68.5, 5.0, 59400)  # Running in (67.95) is behind now; idiot (88.01) is not
     panel.table.selectRow(0)
     assert panel.selected_row() == 0  # past rows can be selected (to sync on them)...
     assert not panel.go_button.isEnabled()  # ...but not sought to
@@ -172,6 +172,8 @@ def test_sync_panel(qapp) -> None:
     synced = []
     panel.synced.connect(synced.append)
     panel.set_now(70.0, 5.0, 59400, "2018-02-01")
+    assert panel.proxy.rowCount() == 1  # it is more than PAST_KEEP_S behind: out of the list...
+    panel.show_past.setChecked(True)  # ...until past events are shown
     panel.table.selectRow(0)
     assert panel.sync_button.isEnabled()
     panel.sync_button.click()
@@ -225,7 +227,7 @@ def test_past_events_leave_the_list(qapp) -> None:
     assert wait_until(qapp, lambda: panel.acmi is not None)
     panel.set_checked_filters(["Bookmarks", "Launches", "Kills", "Ejections"])
     assert panel.proxy.rowCount() == 5
-    panel.set_now(74.0, 5.0)  # not shown: Running in (67.95) leaves at once
+    panel.set_now(69.5, 5.0)  # not shown: Running in (67.95) leaves at once
     assert panel.proxy.rowCount() == 4
     panel.show_past.setChecked(True)  # back, grayed
     assert panel.proxy.rowCount() == 5 and panel.model.is_past(0)
@@ -237,7 +239,7 @@ def test_past_events_leave_the_list(qapp) -> None:
     panel.resize(800, 600)
     panel.show()
     qapp.processEvents()
-    panel.set_now(93.5, 5.0)  # AGR_20A (70.76) and idiot (88.01) are gone now
+    panel.set_now(90.0, 5.0)  # AGR_20A (70.76) and idiot (88.01) are gone now
     assert panel.collapse.state() == panel.collapse.State.Running and panel.proxy.rowCount() == 4
     assert wait_until(qapp, lambda: panel.proxy.rowCount() == 2)
     assert panel.table.rowHeight(0) == panel.table.verticalHeader().defaultSectionSize()
