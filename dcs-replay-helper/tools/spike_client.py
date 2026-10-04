@@ -39,11 +39,14 @@ commands (case-insensitive):
                          Lua state -- this is where the iCommand ids come from
   cam                    the camera and the unit it is aimed at (round 4)
   objects [all]          aircraft (or all units) with their DCS ids
-  view <id> [value]      LoSetCommand a view command (8 = F2, 181 = next, 180 = previous),
-                         then show where the camera went
-  focus <unit>           F2, then next object until the camera is on the unit: a DCS id
-                         (decimal or 0x hex, as in `objects`) or part of its unit/group name.
-                         `focus` alone cancels
+  view [route] <id> [value]
+                         send a view command (8 = F2, 181 = next, 180 = previous), then show
+                         where the camera went. route: digital (default, dispatchDigitalAction),
+                         export (LoSetCommand in the export state) or hooks (does nothing in a replay)
+  focus <unit> [route] [prev]
+                         F2, then next (or previous) object until the camera is on the unit: a
+                         DCS id (decimal or 0x hex, as in `objects`) or part of its unit/group
+                         name. `focus` alone cancels
   key f1|f2|ctrl+f2|... [count] [delay]
                          Windows only: press a view key in DCS, then show `cam`
   kfocus <id> [key] [max]

@@ -15,9 +15,9 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 
 1. Copy `hook/spike/ReplayHelperSpike.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`. Create the `Hooks` folder if it doesn't exist, and use `DCS.openbeta` instead of `DCS` if that's your Saved Games folder.
 2. Start DCS. `Saved Games\DCS\Logs\dcs.log` should contain:
-   `REPLAYHELPER (Main): loaded spike-4 (callbacks registered)`
+   `REPLAYHELPER (Main): loaded spike-5 (callbacks registered)`
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
-4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-4`. Typing `s` then shows the live `STATE` line.
+4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-5`. Typing `s` then shows the live `STATE` line.
 
 ## Results (spike finished)
 
@@ -29,7 +29,38 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
 
-## Round 4: put the F2 view on a unit (to do)
+## Round 5: focus without keystrokes (to do)
+
+Round 4 showed that the hook can switch to F2 through `DCS.dispatchDigitalAction` or through `LoSetCommand` in the export state, but not through `LoSetCommand` in its own state. `spike-5` sends view commands by those routes (`digital` by default, or `export`), and `FOCUS` now uses them. It also counts a unit as viewed only when it is within 3° of straight ahead and the camera is not inside another unit. Round 4's first `kfocus` stopped on the wingman while the camera was still in the cockpit.
+
+**Setup:** as in round 4, with the new `ReplayHelperSpike.lua` (restart DCS: `loaded spike-5`) and the new client. `arm 40` at once.
+
+| # | Do | Look for |
+|---|----|----------|
+| 1 | Press **F1**, then `cam` | `CAM aimed none`: the cockpit no longer counts as viewing the wingman. |
+| 2 | `view 8`, then `view 181` twice, then `view 180` | F2 on your A-10C, then the next aircraft, the next, and back. Each `VIEW-AFTER digital … aimed` matches the screen. |
+| 3 | Press **F1**, then `view export 8`, `view export 181` | The same through the export state. |
+| 4 | Press **F1**, then `focus 0x1005000` | `FOCUS-DONE ok` with the wingman on screen, with no keystrokes and no window focus. Then `focus fubar` back to your own aircraft, and `focus 0x1005400 prev` (the last C-17, one step backwards). |
+| 5 | `focus A-10C #001 export` | The same through the export state. |
+| 6 | `r`, then `focus 0x1005000` while it flies, then `p` | Does it land on the wingman while moving? |
+| 7 | Paused: `digital 53` twice, `digital 191`, `digital 246` | `LOCMD-AFTER digital … accel=` changing. If so, the app could set the speed without keystrokes too. |
+| 8 | Optional, with a track that has red aircraft: `objects`, then `focus <red id>` | Does F2 reach the other side? If it ends `reason=cycled`, try `view 26` or `view 24` and `focus` again, then `kfocus <id> ctrl+f2`. |
+| 9 | `q` | Upload `spike_session.log`. |
+
+**Afterwards:** delete `ReplayHelperSpike.lua` and reinstall `ReplayHelper.lua` from the app, as in round 4.
+
+## Round 4: put the F2 view on a unit (done)
+
+**Results:**
+- **The viewed unit can be worked out.** With F2 pressed by hand, `cam` named the aircraft on screen every time. The camera sits 43.3 m from an A-10C and 134.7 m from a C-17, 0.0–0.1° off its forward axis. The camera's `x` vector is forward. In the cockpit, the camera is 4.7 m from the player's aircraft, 145° off.
+- **The ids differ from Tacview, by a fixed amount.** DCS id = Tacview id + 0xFFFFFF: the player's A-10C is `0x5701` in Tacview and `0x1005700` in DCS, the wingman `0x5001` and `0x1005000`. Unit and group names match Tacview's `Pilot` and `Group`.
+- **`LoSetCommand` from the hooks state doesn't touch the view** during a replay (`ok=true`, camera unchanged). `cmdx 8` (export state) and `digital 8` (`DCS.dispatchDigitalAction`) both switched to F2.
+- **F2 steps through the player's coalition** in id order, including C-17s 250 km away. Ctrl+F2 steps backwards. The sample has no red aircraft, so whether F2 reaches the other side is open.
+- **`kfocus` works:** 5 presses of F2, 2.0 s, to reach the player's aircraft from the wingman.
+- **The time-acceleration ids do nothing** through `LoSetCommand`, from the hooks state or the export state: `accel=` stays 1.000 after 53, 191 and 246. `digital 53` wasn't tried.
+- **Other camera functions exist:** `Export.LoSetCameraPosition`, `LoForceCamera`, `LoCreateCameraRequest`, `LoSendForceCamera` and `DCS.setCameraToAirdrome`. Not needed if F2 stepping works.
+
+**What round 4 tested, and its steps:**
 
 **Goal:** when the app seeks to an event, show the event's aircraft in F2 view. DCS has no call for "view this unit" and none for "which unit is being viewed", so this round tests a workaround:
 
