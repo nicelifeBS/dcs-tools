@@ -58,6 +58,14 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 | 9 | `p`, then `cmd 53` twice, `cmd 191`, `cmd 246` | `LOCMD-AFTER … accel=` going 2, 3, then down, then 1. If nothing changes, try `cmdx 53` the same way. |
 | 10 | `q` | Upload `spike_session.log` and the `REPLAYHELPER` lines from `dcs.log`. Also say what you saw on screen in steps 2–8. |
 
+**If step 5 leaves the camera in the cockpit** (first result: it does), DCS ignores `LoSetCommand` view commands from the hook during a replay. Try the other routes in the same session. Only the client needs restarting for the new commands; the hook is unchanged.
+
+| # | Do | Look for |
+|---|----|----------|
+| 5a | Press **F1**, then `cmdx 8`, then `digital 8` | Does either switch to F2? `cmdx` runs `LoSetCommand` in the export state; `digital` uses `DCS.dispatchDigitalAction`. |
+| 5b | `key f2`, then `key f2` again, then `key ctrl+f2` | The client brings DCS to the front and presses the key, then shows `cam`. Does `CAM aimed` follow what's on screen each time? |
+| 6b | Press **F1**, then `kfocus 0x5001` (`objects` gives the id) | `focus` done with keystrokes: it presses F2 until `cam` says the unit is in view. Look for `KFOCUS-DONE ok`, with the wingman on screen. If it ends `reason=cycled`, try `kfocus <id> ctrl+f2`. |
+
 **Afterwards:** delete `ReplayHelperSpike.lua` from `Scripts\Hooks`, and run **Tools → Install / update DCS hook…** in the app to put `ReplayHelper.lua` back.
 
 ## Round 3: find the command ids, then get above 1x (done)
