@@ -29,11 +29,21 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
 
-## Round 6: focus by stepping F2 (to do)
+## Round 6: focus by stepping F2 (done)
+
+**Results:** focusing works, with no keystrokes and no window focus.
+- **Every `focus` landed:** from the cockpit to the wingman in 2 steps (0.31 s), and on to C-17 #004 in 4 steps (0.63 s). Paused and in flight alike.
+- **`fast` (a step every 0.05 s) doesn't overshoot:** 2 steps in 0.11 s. The camera has moved by the next check.
+- **F2 reaches the other side.** In the new track (`tests/data/Tacview-20261004-131442-DCS-CWG.trk`, F-4E vs MiG-29s on GermanyCW), `focus 0x1003800` stepped from the player's F-4E through the MiG-29s to the target in 5 steps.
+- **The F2 order is all aircraft by DCS id**, both coalitions, wrapping from the highest id to the lowest: the F-4E (`0x1006f00`) went next to the first MiG (`0x1003500`).
+- **The id mapping holds:** for all 7 aircraft in the new recording, DCS id = Tacview id + 0xFFFFFF, and unit and group names equal Tacview's `Pilot` and `Group`.
+- **A fast jet can sit outside 5° for a moment** just after F2 switches to it: one MiG-29 showed 7.0° at 35.6 m. That one wasn't the target, but the app should allow more (15°, with the cockpit check still ruling out the camera sitting inside an aircraft), so it doesn't step past the target.
+
+**What round 6 tested, and its steps:**
 
 Round 5 showed that command 8 (`iCommandViewAir`), sent by `digital` or `export`, does what pressing F2 does: from the cockpit it gives F2 on your own aircraft, and in F2 it steps to the next aircraft. Next/previous object (181/180) do nothing. `spike-6` has `focus` step with 8, and counts a unit as viewed within 5° (the camera trails by up to 1.6° in flight).
 
-**Setup:** as before, with the new `ReplayHelperSpike.lua` (restart DCS: `loaded spike-6`) and the new client. `arm 40` at once.
+**Setup:** as before, with `spike-6`. `arm 40` at once.
 
 | # | Do | Look for |
 |---|----|----------|
