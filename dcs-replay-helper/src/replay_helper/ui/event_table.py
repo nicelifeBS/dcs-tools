@@ -77,6 +77,7 @@ class EventTableModel(QAbstractTableModel):
     """Events in time order. Times shown are DCS replay times: ACMI time + offset."""
 
     goneChanged = Signal(int)  # the new gone_count
+    bookmarksChanged = Signal(list)  # [(replay time, label)] of every bookmark, after a load or re-sync
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -100,6 +101,7 @@ class EventTableModel(QAbstractTableModel):
         self._gone = self._gone_for(self._last_now)
         self.endResetModel()
         self.goneChanged.emit(self._gone)
+        self.bookmarksChanged.emit(self.bookmarks())
 
     def set_offset(self, offset: float) -> None:
         if offset == self.offset:
@@ -110,6 +112,7 @@ class EventTableModel(QAbstractTableModel):
         if self._events:
             self.dataChanged.emit(self.index(0, 0), self.index(len(self._events) - 1, len(HEADERS) - 1))
         self._set_gone(self._gone_for(self._last_now))
+        self.bookmarksChanged.emit(self.bookmarks())
 
     def set_dark(self, dark: bool) -> None:
         """Pick the side colors for a dark or a light background."""
@@ -123,6 +126,10 @@ class EventTableModel(QAbstractTableModel):
 
     def dcs_time(self, row: int) -> float:
         return self._times[row]
+
+    def bookmarks(self) -> list[tuple[float, str]]:
+        """(replay time, label) of every bookmark, whatever the filters show."""
+        return [(t, e.label) for e, t in zip(self._events, self._times) if e.kind is Kind.BOOKMARK]
 
     def is_past(self, row: int) -> bool:
         return row < self._past

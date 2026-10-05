@@ -86,15 +86,14 @@ def rig(qapp):
         seek = SeekController(link, speed, clock=clock, tick_ms=0)
         events: list[tuple] = []
         seek.ready.connect(lambda e, s: events.append(("ready", e, s)))
-        seek.segmentDone.connect(lambda t: events.append(("done", t)))
         seek.failed.connect(lambda m: events.append(("failed", m)))
         return link, speed, clock, seek, events
     return make
 
 
-def go(link, speed, seek, *, event=70.0, preroll=5.0, postroll=0.0):
+def go(link, speed, seek, *, event=70.0, preroll=5.0):
     """Drive a seek from a running replay up to READY."""
-    seek.seek(event, preroll=preroll, postroll=postroll, seek_speed=4, playback_speed=1)
+    seek.seek(event, preroll=preroll, seek_speed=4, playback_speed=1)
     link.push(paused=True)              # DCS confirms the pause
     speed.finish()                      # at 4x
     link.say(Armed(target=event - preroll, now=link.state.t))
@@ -104,9 +103,9 @@ def go(link, speed, seek, *, event=70.0, preroll=5.0, postroll=0.0):
     speed.finish()                      # back to playback speed
 
 
-def test_full_seek_and_post_roll(rig) -> None:
+def test_full_seek(rig) -> None:
     link, speed, clock, seek, events = rig()
-    seek.seek(70, preroll=5, postroll=3, seek_speed=4, playback_speed=1)
+    seek.seek(70, preroll=5, seek_speed=4, playback_speed=1)
     assert seek.phase is Phase.PAUSING and link.calls == ["pause"]
     link.push(paused=True)
     assert seek.phase is Phase.SPEEDING and speed.targets == [4]
@@ -122,26 +121,14 @@ def test_full_seek_and_post_roll(rig) -> None:
     speed.finish()
     assert seek.phase is Phase.READY and events == [("ready", 70, 65)]
 
-    seek.play()
-    assert seek.phase is Phase.SEGMENT_ARMING and link.calls[-1] == "arm 73"
-    link.say(Armed(target=73, now=65.01))
-    assert seek.phase is Phase.SEGMENT and link.calls[-1] == "resume"
-    link.push(paused=False)
-    link.say(Arrived(t=73.02, target=73, over=0.02))
-    assert seek.phase is Phase.IDLE and events[-1] == ("done", 73.02)
+    seek.play()  # plays on through the target
+    assert seek.phase is Phase.IDLE and link.calls[-1] == "resume"
 
 
 def test_skips_pausing_when_already_paused(rig) -> None:
     link, speed, clock, seek, events = rig(paused=True)
     seek.seek(70, preroll=5, seek_speed=4)
     assert seek.phase is Phase.SPEEDING and "pause" not in link.calls
-
-
-def test_play_without_post_roll_just_resumes(rig) -> None:
-    link, speed, clock, seek, events = rig()
-    go(link, speed, seek)
-    seek.play()
-    assert seek.phase is Phase.IDLE and link.calls[-1] == "resume"
 
 
 @pytest.mark.parametrize("event,preroll", [(40, 0), (54, 5), (50.1, 0)])
@@ -154,7 +141,7 @@ def test_refuses_targets_behind_the_playhead(rig, event, preroll) -> None:
 
 def test_refuses_when_disconnected_or_negative(rig) -> None:
     link, speed, clock, seek, events = rig()
-    with pytest.raises(SeekError, match="pre-roll and post-roll"):
+    with pytest.raises(SeekError, match="pre-roll cannot be negative"):
         seek.seek(70, preroll=-1)
     link.connected = False
     with pytest.raises(SeekError, match="not connected"):
@@ -249,12 +236,11 @@ def test_seek_on_fake_dcs(qapp, fake_dcs_server) -> None:
     speed = SpeedController(link, AutoKeyBackend(link))
     speed.max_speed = 4
     seek = SeekController(link, speed)
-    ready, done, failed = [], [], []
+    ready, failed = [], []
     seek.ready.connect(lambda e, s: ready.append((e, s)))
-    seek.segmentDone.connect(done.append)
     seek.failed.connect(failed.append)
 
-    seek.seek(120.0, preroll=5.0, postroll=3.0, seek_speed=4, playback_speed=1)
+    seek.seek(120.0, preroll=5.0, seek_speed=4, playback_speed=1)
     assert wait_until(qapp, lambda: ready or failed, timeout=10), "seek did not finish"
     assert not failed, failed
     # The fake's frame length depends on thread scheduling (x10 here), so allow a hiccup.
@@ -263,8 +249,7 @@ def test_seek_on_fake_dcs(qapp, fake_dcs_server) -> None:
     assert sim.max_running_accel == 4  # never above the seek speed
 
     seek.play()
-    assert wait_until(qapp, lambda: done or failed, timeout=10)
-    assert not failed, failed
-    assert sim.paused and 123.0 <= sim.t < 123.5
+    assert wait_until(qapp, lambda: not sim.paused)
+    assert seek.phase is Phase.IDLE and not failed
     speed.shutdown()
     link.stop()
