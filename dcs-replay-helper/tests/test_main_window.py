@@ -75,27 +75,24 @@ def test_window_sets_speed_within_limit(qapp, app_rig) -> None:
     assert "above the 2x limit: paused" in window.log_view.toPlainText()
 
 
-def test_window_seek_with_pre_and_post_roll(qapp, app_rig) -> None:
+def test_window_seek_with_pre_roll(qapp, app_rig) -> None:
     sim, link, window = app_rig(start=50.0, time_scale=10)
     assert wait_until(qapp, lambda: link.connected and link.hook_version)
 
     window.goto_edit.setText("16:32:00")  # mission time = replay 2:00
     window.goto_mode.setCurrentIndex(window.goto_mode.findData("mission"))
     window.preroll_spin.setValue(5)
-    window.postroll_spin.setValue(3)
     window.go_button.click()
     assert wait_until(qapp, lambda: window.seek_status.text().startswith("Ready"), timeout=10), \
         window.seek_status.text()
     assert window.seek_status.text() == ("Ready: paused at 1:55.0, 5 s before the target at 2:00.0. "
-                                         "Play runs through it and pauses 3 s after.")
+                                         "Press Play.")
     assert 115.0 <= sim.t < 115.5 and sim.paused and sim.accel == 1 and sim.max_running_accel == 4
-    assert window.play_button.text() == "Play through (pauses 3 s after the target)"
+    assert window.play_button.text() == "Play"
 
-    window.play_button.click()
-    assert wait_until(qapp, lambda: window.seek_status.text().startswith("Paused at"), timeout=10)
-    assert re.fullmatch(r"Paused at 2:03\.\d, 3\.\d s after the target\.", window.seek_status.text())
-    assert 123.0 <= sim.t < 123.5 and sim.paused
-    assert wait_until(qapp, lambda: window.play_button.text() == "Play")  # on the next STATE
+    window.play_button.click()  # plays on through the target
+    assert wait_until(qapp, lambda: window.play_button.text() == "Pause")
+    assert wait_until(qapp, lambda: sim.t > 121.0, timeout=10) and not sim.paused
 
 
 def test_window_seek_errors(qapp, app_rig) -> None:
@@ -136,7 +133,6 @@ def test_window_seeks_to_a_tacview_bookmark(qapp, app_rig) -> None:
     assert wait_until(qapp, lambda: panel.acmi is not None)
 
     window.preroll_spin.setValue(5)
-    window.postroll_spin.setValue(3)
     panel.table.selectRow(1)  # "idiot" at 88.01
     panel.go_button.click()
     assert wait_until(qapp, lambda: window.seek_status.text().startswith("Ready"), timeout=10), \
@@ -200,6 +196,44 @@ def test_window_with_an_old_hook_uses_keys_and_cannot_focus(qapp, app_rig, monke
     assert sim.focused is None
 
 
+def test_window_stops_before_bookmarks_and_leaves_the_camera(qapp, app_rig) -> None:
+    sim, link, window = seek_to_idiot(qapp, app_rig, paused=True)
+    # Bookmarks "Running in" at 67.95 and "idiot" at 88.01, pre-roll 5 s.
+    assert wait_until(qapp, lambda: sim.stop == pytest.approx(62.95))
+    assert window.stop_status.text() == "Next stop: 1:03.0, 5 s before bookmark 'Running in' at 1:08.0"
+
+    window.play_button.click()
+    assert wait_until(qapp, lambda: window.seek_status.text().startswith("Stopped at"), timeout=10)
+    assert re.fullmatch(r"Stopped at 1:03\.\d, 5 s before bookmark 'Running in' at 1:08\.0\. Press Play\.",
+                        window.seek_status.text())
+    assert sim.paused and 62.95 <= sim.t < 63.5
+    assert window.stop_status.text() == "Next stop: 1:23.0, 5 s before bookmark 'idiot' at 1:28.0"
+    assert sim.focused is None and "F2" not in window.log_view.toPlainText()  # camera left alone
+    assert "stopped 5 s before bookmark 'Running in' at 1:08.0" in window.log_view.toPlainText()
+
+    window.stops_check.setChecked(False)
+    assert wait_until(qapp, lambda: sim.stop is None)
+    assert window.stop_status.text() == ""
+    assert wait_until(qapp, lambda: window.play_button.text() == "Play")  # on the next STATE
+    window.play_button.click()
+    assert wait_until(qapp, lambda: sim.t > 84.0, timeout=10) and not sim.paused  # runs past idiot's stop
+
+
+def test_window_plays_through_the_event_it_jumped_to_and_stops_before_the_next(qapp, app_rig) -> None:
+    sim, link, window = seek_to_idiot(qapp, app_rig, paused=True)
+    window.events.table.selectRow(0)  # "Running in" at 67.95
+    window.events.go_button.click()
+    assert wait_until(qapp, lambda: window.seek_status.text().startswith("Ready"), timeout=10)
+    assert wait_until(qapp, lambda: sim.focused == 0x1005700)  # the jump shows the aircraft
+    sim.focused = None  # the user picks another camera
+    assert wait_until(qapp, lambda: sim.stop == pytest.approx(83.01))  # idiot; not Running in again
+
+    window.play_button.click()
+    assert wait_until(qapp, lambda: window.seek_status.text().startswith("Stopped at"), timeout=10)
+    assert sim.paused and 83.01 <= sim.t < 83.6 and sim.t > 67.95
+    assert sim.focused is None
+
+
 def test_hook_check_and_install(qapp, tmp_path) -> None:
     from replay_helper.dcs.link import DcsLink
     from replay_helper.ui.main_window import MainWindow
@@ -232,7 +266,7 @@ def test_settings_are_remembered(qapp) -> None:
     first.limit_combo.setCurrentIndex(first.limit_combo.findData(8))
     first.speed_combo.setCurrentIndex(first.speed_combo.findData(0.5))
     first.preroll_spin.setValue(12)
-    first.postroll_spin.setValue(4)
+    first.stops_check.setChecked(False)
     first.goto_mode.setCurrentIndex(first.goto_mode.findData("mission"))
     first.focus_check.setChecked(False)
     first.events.checks[1][0].setChecked(True)  # Launches
@@ -242,7 +276,8 @@ def test_settings_are_remembered(qapp) -> None:
     second = MainWindow(DcsLink(), settings=Settings())
     assert second.limit_combo.currentData() == 8
     assert second.speed_combo.currentData() == 0.5
-    assert (second.preroll_spin.value(), second.postroll_spin.value()) == (12, 4)
+    assert second.preroll_spin.value() == 12
+    assert not second.stops_check.isChecked()
     assert second.goto_mode.currentData() == "mission"
     assert not second.focus_check.isChecked()
     assert [box.isChecked() for box, _ in second.events.checks][:2] == [True, True]

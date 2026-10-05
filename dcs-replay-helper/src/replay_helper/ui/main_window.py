@@ -1,4 +1,5 @@
-"""Main window: connection, clock, play/pause, seeking with pre/post-roll, speed, Tacview events."""
+"""Main window: connection, clock, play/pause, seeking with a pre-roll, stops before bookmarks,
+speed, Tacview events."""
 
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ from .. import hook_installer
 from ..dcs.speed import SpeedController
 from ..seek import Phase, SeekController, SeekError
 from ..settings import Settings
+from ..stops import BookmarkStops, Stop
 from ..tacview.events import Event, dcs_unit_id
 from ..timefmt import fmt_model, fmt_speed, fmt_tod, parse_clock, tod_to_model
 from .event_table import EventPanel
@@ -115,21 +117,24 @@ class MainWindow(QMainWindow):
         self.preroll_spin.setDecimals(1)
         self.preroll_spin.setSuffix(" s")
         self.preroll_spin.setValue(DEFAULT_PREROLL_S)
-        self.preroll_spin.setToolTip("Pause this long before the target.")
-        self.postroll_spin = QDoubleSpinBox()
-        self.postroll_spin.setRange(0.0, 600.0)
-        self.postroll_spin.setDecimals(1)
-        self.postroll_spin.setSuffix(" s")
-        self.postroll_spin.setSpecialValueText("off")
-        self.postroll_spin.setToolTip("After arriving, Play runs through the target and pauses this "
-                                      "long after it. Off: Play just plays on.")
+        self.preroll_spin.setToolTip("Pause this long before the target, and before each bookmark "
+                                     "with Stop before bookmarks.")
+        self.stops_check = QCheckBox("Stop before bookmarks")
+        self.stops_check.setChecked(True)
+        self.stops_check.setToolTip("While the replay plays, pause it the pre-roll before the next Tacview "
+                                    "bookmark, so it never runs past one. The camera and the speed are "
+                                    "left as they are. Seeks jump past bookmarks, and Play after a seek "
+                                    "runs through its target.")
         self.focus_check = QCheckBox("Show the event's aircraft (F2)")
         self.focus_check.setChecked(True)
-        self.focus_check.setToolTip("When a seek to an event arrives, switch DCS to the F2 view of the "
-                                    "aircraft involved: the shooter, the lost or ejecting aircraft, or "
-                                    "the one a bookmark names.")
+        self.focus_check.setToolTip("When you jump to an event from the list, switch DCS to the F2 view of "
+                                    "the aircraft involved once it arrives: the shooter, the lost or "
+                                    "ejecting aircraft, or the one a bookmark names. Stops before "
+                                    "bookmarks never move the camera.")
         self.seek_status = QLabel()
         self.seek_status.setWordWrap(True)
+        self.stop_status = QLabel()
+        self.stop_status.setWordWrap(True)
         goto_row = QHBoxLayout()
         goto_row.addWidget(QLabel("Go to"))
         goto_row.addWidget(self.goto_edit, 1)
@@ -140,8 +145,7 @@ class MainWindow(QMainWindow):
         roll_row.addWidget(QLabel("Pre-roll"))
         roll_row.addWidget(self.preroll_spin)
         roll_row.addSpacing(16)
-        roll_row.addWidget(QLabel("Post-roll"))
-        roll_row.addWidget(self.postroll_spin)
+        roll_row.addWidget(self.stops_check)
         roll_row.addSpacing(16)
         roll_row.addWidget(self.focus_check)
         roll_row.addStretch(1)
@@ -150,6 +154,7 @@ class MainWindow(QMainWindow):
         goto_layout.addLayout(goto_row)
         goto_layout.addLayout(roll_row)
         goto_layout.addWidget(self.seek_status)
+        goto_layout.addWidget(self.stop_status)
         goto_box.setEnabled(seek is not None)
 
         # speed
@@ -229,8 +234,18 @@ class MainWindow(QMainWindow):
         if seek is not None:
             seek.phaseChanged.connect(self._on_seek_phase)
             seek.ready.connect(self._on_seek_ready)
-            seek.segmentDone.connect(self._on_segment_done)
             seek.failed.connect(self._on_seek_failed)
+        # Stops before bookmarks keep the hook's stop between seeks, so they need the seek.
+        self.stops = BookmarkStops(link, seek, self) if seek is not None else None
+        if self.stops is not None:
+            self.stops.armedChanged.connect(self._on_stop_armed)
+            self.stops.reached.connect(self._on_stop_reached)
+            self.stops.set_preroll(self.preroll_spin.value())
+            self.preroll_spin.valueChanged.connect(self.stops.set_preroll)
+            self.stops_check.toggled.connect(self.stops.set_enabled)
+            self.events.model.bookmarksChanged.connect(self.stops.set_bookmarks)
+        else:
+            self.stops_check.setEnabled(False)
 
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
@@ -330,12 +345,12 @@ class MainWindow(QMainWindow):
         pick(self.limit_combo, st.get("seek_speed"))
         pick(self.speed_combo, st.get("playback_speed"))
         pick(self.goto_mode, st.get("goto_mode"))
-        for spin, key in ((self.preroll_spin, "preroll"), (self.postroll_spin, "postroll")):
-            value = st.get(key)
-            if isinstance(value, (int, float)):
-                spin.setValue(value)
+        if isinstance(st.get("preroll"), (int, float)):
+            self.preroll_spin.setValue(st.get("preroll"))
         if isinstance(st.get("focus_aircraft"), bool):
             self.focus_check.setChecked(st.get("focus_aircraft"))
+        if isinstance(st.get("stop_at_bookmarks"), bool):
+            self.stops_check.setChecked(st.get("stop_at_bookmarks"))
         if isinstance(st.get("event_filters"), list):
             self.events.set_checked_filters(st.get("event_filters"))
         for key, restore in (("geometry", self.restoreGeometry), ("splitter", self.splitter.restoreState)):
@@ -347,9 +362,9 @@ class MainWindow(QMainWindow):
         self.speed_combo.currentIndexChanged.connect(lambda: st.set("playback_speed", self.speed_combo.currentData()))
         self.goto_mode.currentIndexChanged.connect(lambda: st.set("goto_mode", self.goto_mode.currentData()))
         self.preroll_spin.valueChanged.connect(lambda v: st.set("preroll", v))
-        self.postroll_spin.valueChanged.connect(lambda v: st.set("postroll", v))
         self.events.filtersChanged.connect(lambda labels: st.set("event_filters", labels))
         self.focus_check.toggled.connect(lambda on: st.set("focus_aircraft", on))
+        self.stops_check.toggled.connect(lambda on: st.set("stop_at_bookmarks", on))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.settings is not None:
@@ -387,11 +402,7 @@ class MainWindow(QMainWindow):
         # Standard icons instead of ▶/⏸ characters, which some fonts lack.
         icon = QStyle.StandardPixmap.SP_MediaPlay if paused else QStyle.StandardPixmap.SP_MediaPause
         self.play_button.setIcon(self.style().standardIcon(icon))
-        sk = self.seek
-        if paused and sk is not None and sk.phase is Phase.READY and sk.postroll > 0:
-            self.play_button.setText(f"Play through (pauses {sk.postroll:g} s after the target)")
-        else:
-            self.play_button.setText("Play" if paused else "Pause")
+        self.play_button.setText("Play" if paused else "Pause")
 
     # --- actions ----------------------------------------------------------------------
     def _play_clicked(self) -> None:
@@ -440,8 +451,8 @@ class MainWindow(QMainWindow):
             return
         self._seek_event_obj = event
         try:
-            self.seek.seek(target, preroll=self.preroll_spin.value(), postroll=self.postroll_spin.value(),
-                           seek_speed=self._limit(), playback_speed=self._playback())
+            self.seek.seek(target, preroll=self.preroll_spin.value(), seek_speed=self._limit(),
+                           playback_speed=self._playback())
         except SeekError as exc:
             text = str(exc)
             self._status(self.seek_status, text[:1].upper() + text[1:], error=True)
@@ -480,9 +491,6 @@ class MainWindow(QMainWindow):
             Phase.ARMING: "Arming the stop…",
             Phase.RUNNING: f"Seeking to {fmt_model(sk.stop_t)} at {fmt_speed(sk.seek_speed)}…",
             Phase.SLOWING: f"Arrived; setting playback speed ({fmt_speed(sk.playback_speed)})…",
-            Phase.SEGMENT_ARMING: "Arming the post-roll stop…",
-            Phase.SEGMENT: f"Playing through the target; pausing at "
-                           f"{fmt_model((sk.event_t or 0) + sk.postroll)}…",
         }
         if phase in texts:
             self._status(self.seek_status, texts[phase])
@@ -492,15 +500,13 @@ class MainWindow(QMainWindow):
             self._set_play_button(s.paused)
 
     def _on_seek_ready(self, event_t: float, stop_t: float) -> None:
-        sk = self.seek
-        then = (f"Play runs through it and pauses {sk.postroll:g} s after." if sk.postroll > 0
-                else "Press Play.")
         self._status(self.seek_status, f"Ready: paused at {fmt_model(stop_t)}, {event_t - stop_t:g} s before "
-                                       f"the target at {fmt_model(event_t)}. {then}")
+                                       f"the target at {fmt_model(event_t)}. Press Play.")
         self._log(f"ready at {fmt_model(stop_t)} (target {fmt_model(event_t)})")
         self._focus_event_aircraft()
 
     def _focus_event_aircraft(self) -> None:
+        """F2 on the aircraft of the event just jumped to; only seeks to a picked event do this."""
         e = self._seek_event_obj
         if e is None or e.aircraft is None or not self.focus_check.isChecked():
             return
@@ -511,14 +517,24 @@ class MainWindow(QMainWindow):
         self._log(f"showing {who} in F2…")
         self.link.focus(dcs_unit_id(e.aircraft), e.aircraft_unit)
 
-    def _on_segment_done(self, t: float) -> None:
-        after = t - (self.seek.event_t or t)
-        self._status(self.seek_status, f"Paused at {fmt_model(t)}, {after:.1f} s after the target.")
-        self._log(f"post-roll done at {fmt_model(t)}")
-
     def _on_seek_failed(self, message: str) -> None:
         self._status(self.seek_status, f"Seek stopped: {message}", error=True)
         self._log(f"seek failed: {message}")
+
+    # --- stops before bookmarks ---------------------------------------------------------
+    @staticmethod
+    def _before(stop: Stop) -> str:
+        lead = stop.bookmark_t - stop.t
+        when = f"{lead:g} s before" if lead > 0 else "at"
+        return f"{when} bookmark '{stop.label}' at {fmt_model(stop.bookmark_t)}"
+
+    def _on_stop_armed(self, stop: Stop | None) -> None:
+        self.stop_status.setText("" if stop is None else f"Next stop: {fmt_model(stop.t)}, {self._before(stop)}")
+
+    def _on_stop_reached(self, stop: Stop, t: float) -> None:
+        # The camera stays where it is: only a jump to an event moves it.
+        self._status(self.seek_status, f"Stopped at {fmt_model(t)}, {self._before(stop)}. Press Play.")
+        self._log(f"stopped {self._before(stop)}")
 
     # --- speed events -----------------------------------------------------------------
     def _on_speed_busy(self, busy: bool) -> None:

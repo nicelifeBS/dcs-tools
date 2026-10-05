@@ -1,4 +1,4 @@
-"""Seek forward to an event with a pre-roll, then optionally play a post-roll segment.
+"""Seek forward to an event with a pre-roll.
 
 A seek, step by step (each waits for DCS to confirm before the next):
 
@@ -9,9 +9,7 @@ A seek, step by step (each waits for DCS to confirm before the next):
     SLOWING   set the playback speed while still paused
     READY     paused at the pre-roll point
 
-play() from READY arms a second stop at event + post-roll (when there is one) and resumes:
-
-    SEGMENT_ARMING -> SEGMENT -> IDLE (paused after the event)
+play() from READY resumes and goes back to IDLE.
 
 Replays only run forward, so a target at or behind the playhead is refused up front. Anything
 unexpected -- the track restarting, someone pausing mid-seek, the link dropping, DCS not
@@ -40,8 +38,6 @@ class Phase(Enum):
     RUNNING = "running"
     SLOWING = "slowing"
     READY = "ready"
-    SEGMENT_ARMING = "segment_arming"
-    SEGMENT = "segment"
 
 
 class SeekError(ValueError):
@@ -51,7 +47,6 @@ class SeekError(ValueError):
 class SeekController(QObject):
     phaseChanged = Signal(object)  # Phase
     ready = Signal(float, float)  # (event t, stop t): paused at the pre-roll point
-    segmentDone = Signal(float)  # paused at event + post-roll
     failed = Signal(str)
 
     def __init__(self, link, speed, *, clock: Callable[[], float] = time.monotonic,
@@ -67,7 +62,6 @@ class SeekController(QObject):
         self.event_t: float | None = None
         self.stop_t: float | None = None
         self.preroll = 0.0
-        self.postroll = 0.0
         self.seek_speed = 1.0
         self.playback_speed = 1.0
 
@@ -91,14 +85,14 @@ class SeekController(QObject):
     def busy(self) -> bool:
         return self._phase not in (Phase.IDLE, Phase.READY)
 
-    def seek(self, event_t: float, *, preroll: float = 0.0, postroll: float = 0.0,
-             seek_speed: float = 1.0, playback_speed: float = 1.0) -> None:
+    def seek(self, event_t: float, *, preroll: float = 0.0, seek_speed: float = 1.0,
+             playback_speed: float = 1.0) -> None:
         """Start a seek. Raises SeekError if it cannot start."""
         s = self._link.state
         if not self._link.connected or s is None:
             raise SeekError("not connected to DCS")
-        if preroll < 0 or postroll < 0:
-            raise SeekError("pre-roll and post-roll cannot be negative")
+        if preroll < 0:
+            raise SeekError("the pre-roll cannot be negative")
         stop_t = event_t - preroll
         now = self._link.model_time_now() or s.t
         if stop_t <= now + MIN_LEAD_S:
@@ -107,7 +101,7 @@ class SeekController(QObject):
         if self.busy:
             self._abort()
         self.event_t, self.stop_t = event_t, stop_t
-        self.preroll, self.postroll = preroll, postroll
+        self.preroll = preroll
         self.seek_speed, self.playback_speed = seek_speed, playback_speed
         if s.paused:
             self._start_speeding()
@@ -116,16 +110,10 @@ class SeekController(QObject):
             self._link.pause()
 
     def play(self) -> None:
-        """From READY: play on through the event, pausing after the post-roll if one is set."""
-        if self._phase is not Phase.READY or self.event_t is None:
-            self._link.resume()
-            return
-        if self.postroll > 0:
-            self._set_phase(Phase.SEGMENT_ARMING)
-            self._link.arm_stop(self.event_t + self.postroll)
-        else:
+        """Resume; from READY, the seek is done."""
+        if self._phase is Phase.READY:
             self._set_phase(Phase.IDLE)
-            self._link.resume()
+        self._link.resume()
 
     def cancel(self) -> None:
         if self._phase is Phase.IDLE:
@@ -136,21 +124,20 @@ class SeekController(QObject):
 
     def tick(self) -> None:
         if self._deadline is not None and self._clock() > self._deadline:
-            what = {Phase.PAUSING: "pause", Phase.ARMING: "arm the stop",
-                    Phase.SEGMENT_ARMING: "arm the post-roll stop"}.get(self._phase, "answer")
+            what = {Phase.PAUSING: "pause", Phase.ARMING: "arm the stop"}.get(self._phase, "answer")
             self._fail(f"DCS did not {what} in time")
 
     # --- transitions ------------------------------------------------------------------
     def _set_phase(self, phase: Phase) -> None:
         self._phase = phase
-        waits = (Phase.PAUSING, Phase.ARMING, Phase.SEGMENT_ARMING)
+        waits = (Phase.PAUSING, Phase.ARMING)
         self._deadline = self._clock() + CONFIRM_TIMEOUT_S if phase in waits else None
         self.phaseChanged.emit(phase)
 
     def _abort(self) -> None:
         if self._speed.busy:
             self._speed.cancel()
-        if self._phase in (Phase.ARMING, Phase.RUNNING, Phase.SEGMENT_ARMING, Phase.SEGMENT):
+        if self._phase in (Phase.ARMING, Phase.RUNNING):
             self._link.disarm()
 
     def _fail(self, message: str) -> None:
@@ -178,14 +165,14 @@ class SeekController(QObject):
     def _on_state(self, s: State) -> None:
         if self._phase is Phase.PAUSING and s.paused:
             self._start_speeding()
-        elif self._phase in (Phase.RUNNING, Phase.SEGMENT):
+        elif self._phase is Phase.RUNNING:
             if not s.paused:
                 self._seen_running = True
             elif self._seen_running:
                 # Paused, but not by our stop (ARRIVED comes before the STATE that shows it).
                 self._fail("the replay was paused before reaching the target")
         elif self._phase is Phase.READY and not s.paused:
-            self._set_phase(Phase.IDLE)  # resumed from DCS itself; no post-roll to watch
+            self._set_phase(Phase.IDLE)  # resumed from DCS itself
 
     def _on_speed_reached(self, speed: float) -> None:
         if self._phase is Phase.SPEEDING:
@@ -204,22 +191,16 @@ class SeekController(QObject):
         if isinstance(msg, Armed):
             if phase is Phase.ARMING and abs(msg.target - self.stop_t) < 1e-3:
                 self._resume_to(Phase.RUNNING)
-            elif phase is Phase.SEGMENT_ARMING and abs(msg.target - (self.event_t + self.postroll)) < 1e-3:
-                self._resume_to(Phase.SEGMENT)
         elif isinstance(msg, Arrived):
             if phase is Phase.RUNNING and abs(msg.target - self.stop_t) < 1e-3:
                 self._set_phase(Phase.SLOWING)
                 self._speed.set_target(self.playback_speed)
-            elif phase is Phase.SEGMENT and abs(msg.target - (self.event_t + self.postroll)) < 1e-3:
-                self._set_phase(Phase.IDLE)
-                self.segmentDone.emit(msg.t)
-        elif isinstance(msg, Error) and phase in (Phase.ARMING, Phase.SEGMENT_ARMING):
+        elif isinstance(msg, Error) and phase is Phase.ARMING:
             if msg.text.startswith("behind"):
                 self._fail("the replay is already past the target")
             else:
                 self._fail(f"DCS refused the stop: {msg.text}")
-        elif isinstance(msg, Disarmed) and msg.reason != "request" and phase in (
-                Phase.ARMING, Phase.RUNNING, Phase.SEGMENT_ARMING, Phase.SEGMENT):
+        elif isinstance(msg, Disarmed) and msg.reason != "request" and phase in (Phase.ARMING, Phase.RUNNING):
             reason = {"restart": "the track restarted", "mission_end": "the mission ended"}.get(
                 msg.reason, msg.reason)
             self._set_phase(Phase.IDLE)
