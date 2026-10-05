@@ -59,3 +59,24 @@ def test_state_line_parses() -> None:
     sim = fake.FakeDcs(start=62.95, paused=True)
     s = protocol.parse(sim.state_line())
     assert s.t == 62.95 and s.paused and s.accel == 1 and s.speed == 0 and s.start_tod == 59400
+
+
+def test_speed_commands_like_hook_0_2() -> None:
+    sim = fake.FakeDcs()
+    sim.handle("SPEED UP")
+    sim.handle("SPEED UP")
+    assert sim.accel == 3
+    sim.handle("SPEED NORMAL")
+    sim.handle("SPEED DOWN")
+    assert sim.accel == 0.5
+
+
+def test_focus() -> None:
+    sim = fake.FakeDcs(aircraft={16797696})
+    sim.drain()
+    sim.handle("FOCUS 16797696 A-10C #001")
+    assert sim.drain() == ["FOCUSED id=16797696 steps=1"] and sim.focused == 16797696
+    sim.handle("FOCUS 42")
+    assert sim.drain() == ["FOCUS-FAILED id=42 reason=not_found"]
+    sim.handle("FOCUS")
+    assert sim.drain() == []

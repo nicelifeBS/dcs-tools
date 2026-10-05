@@ -11,6 +11,7 @@ shared afterwards. Type `help` at the prompt for the command list.
 
 from __future__ import annotations
 
+import re
 import socket
 import sys
 import threading
@@ -36,6 +37,21 @@ commands (case-insensitive):
   digital <id> [value]   DCS.dispatchDigitalAction
   globals [words]        list globals named like the words (default: accel decel) in each
                          Lua state -- this is where the iCommand ids come from
+  cam                    the camera and the unit it is aimed at (round 4)
+  objects [all]          aircraft (or all units) with their DCS ids
+  view [route] <id> [value]
+                         send a view command (8 = F2, 181 = next, 180 = previous), then show
+                         where the camera went. route: digital (default, dispatchDigitalAction),
+                         export (LoSetCommand in the export state) or hooks (does nothing in a replay)
+  focus <unit> [route] [fast]
+                         press F2 (command 8) until the camera is on the unit: a DCS id (decimal
+                         or 0x hex, as in `objects`) or part of its unit/group name. fast: a step
+                         every 0.05 s instead of 0.15 s. `focus` alone cancels
+  key f1|f2|ctrl+f2|... [count] [delay]
+                         Windows only: press a view key in DCS, then show `cam`
+  kfocus <id> [key] [max]
+                         Windows only: `focus` with keystrokes -- press the key (default f2)
+                         until `cam` says the unit (DCS id, decimal or 0x hex) is in view
   key up|down|normal [count] [delay]
                          Windows only: send LCtrl+Z / LAlt+Z / LShift+Z to the DCS window.
                          delay (default 3 s) gives you time to click into DCS if focusing fails;
@@ -73,6 +89,9 @@ class Client:
         self.watch = False
         self.running = True
         self._last_logged_state = 0.0
+        self._expect_prefix: str | None = None  # wait_for(): the next line starting with this
+        self._expect_line: str | None = None
+        self._expect_event = threading.Event()
 
     def send(self, line: str) -> None:
         self.tx.sendto(line.encode("utf-8"), (HOST, CMD_PORT))
@@ -99,6 +118,20 @@ class Client:
             else:
                 self.log.write(f"<< {line}")
                 print(f"  {line}")
+                if self._expect_prefix and line.startswith(self._expect_prefix):
+                    self._expect_prefix = None
+                    self._expect_line = line
+                    self._expect_event.set()
+
+    def request(self, line: str, reply_prefix: str, timeout: float = 2.0) -> str | None:
+        """Send a command and return the first reply line starting with reply_prefix."""
+        self._expect_event.clear()
+        self._expect_line = None
+        self._expect_prefix = reply_prefix
+        self.send(line)
+        self._expect_event.wait(timeout)
+        self._expect_prefix = None
+        return self._expect_line
 
     def show_state(self) -> None:
         if not self.last_state:
@@ -113,6 +146,20 @@ class Client:
 # --------------------------------------------------------------------------------------
 SCAN_LCTRL, SCAN_LALT, SCAN_LSHIFT, SCAN_Z = 0x1D, 0x38, 0x2A, 0x2C
 SPEED_KEYS = {"up": SCAN_LCTRL, "down": SCAN_LALT, "normal": SCAN_LSHIFT}
+MODIFIER_SCANS = {"ctrl": SCAN_LCTRL, "alt": SCAN_LALT, "shift": SCAN_LSHIFT}
+FKEY_SCANS = {f"f{n}": 0x3A + n for n in range(1, 11)} | {"f11": 0x57, "f12": 0x58}
+
+
+def view_chord(name: str) -> list[int] | None:
+    """Scan codes for a view key such as f2 or ctrl+f2 (left-hand modifiers); None if unknown."""
+    *mods, key = name.lower().split("+")
+    if key not in FKEY_SCANS or any(m not in MODIFIER_SCANS for m in mods):
+        return None
+    return [MODIFIER_SCANS[m] for m in mods] + [FKEY_SCANS[key]]
+
+
+def _press_chord(scans: list[int]) -> None:
+    _send_scancodes([(s, False) for s in scans] + [(s, True) for s in reversed(scans)])
 
 
 def _send_scancodes(sequence: list[tuple[int, bool]]) -> None:
@@ -174,6 +221,69 @@ def press_speed_key(which: str, count: int, delay: float, client: Client) -> Non
     client.show_state()
 
 
+def press_view_key(name: str, count: int, delay: float, client: Client) -> None:
+    if sys.platform != "win32":
+        print("  key injection only works on Windows")
+        return
+    focused = _focus_dcs()
+    print(f"  DCS window focus: {'ok' if focused else 'FAILED -- click into DCS now'}; sending in {delay:.0f}s")
+    time.sleep(delay)
+    for _ in range(count):
+        _press_chord(view_chord(name))
+        time.sleep(0.3)
+    client.log.write(f"## key {name} x{count} (focus {'ok' if focused else 'failed'})")
+    print(f"  sent {name} x{count}")
+    time.sleep(0.3)
+    client.send("CAM")
+
+
+AIMED_ID = re.compile(r"\baimed id=(\d+)/")
+
+
+def parse_unit_id(text: str) -> int | None:
+    try:
+        return int(text, 16) if text.lower().startswith("0x") else int(text)
+    except ValueError:
+        return None
+
+
+def key_focus(target: int, chord: str, max_steps: int, delay: float, client: Client) -> None:
+    """FOCUS done with keystrokes: press the view key until CAM says the target is in view."""
+    if sys.platform != "win32":
+        print("  key injection only works on Windows")
+        return
+    focused = _focus_dcs()
+    print(f"  DCS window focus: {'ok' if focused else 'FAILED -- click into DCS now'}; starting in {delay:.0f}s")
+    time.sleep(delay)
+    started = time.monotonic()
+    visited: list[str] = []
+    result = "fail reason=max_steps"
+    for step in range(max_steps + 1):
+        if step:
+            _press_chord(view_chord(chord))
+            time.sleep(0.3)  # for the camera to move
+        reply = client.request("CAM", "CAM aimed")
+        match = AIMED_ID.search(reply or "")
+        if not match:
+            result = "fail reason=no_CAM_reply" if reply is None else "fail reason=nothing_aimed"
+            if reply is None:
+                break
+            visited.append("none")
+            continue
+        unit = int(match.group(1))
+        if unit == target:
+            result = "ok"
+            break
+        if visited and f"0x{unit:x}" == visited[0]:
+            result = "fail reason=cycled"
+            break
+        visited.append(f"0x{unit:x}")
+    line = (f"KFOCUS-DONE {result} target=0x{target:x} key={chord} presses={step} "
+            f"time={time.monotonic() - started:.1f} visited={','.join(visited) or '-'}")
+    client.log.write(f"## {line}")
+    print(f"  {line}")
+
+
 # --------------------------------------------------------------------------------------
 # REPL
 # --------------------------------------------------------------------------------------
@@ -204,10 +314,29 @@ def handle(client: Client, text: str) -> bool:
         client.send(f"{prefix} " + " ".join(args))
     elif word == "globals":
         client.send("GLOBALS " + " ".join(args))
+    elif word == "cam":
+        client.send("CAM")
+    elif word == "objects" and len(args) <= 1:
+        client.send("OBJECTS " + " ".join(args))
+    elif word == "view" and 1 <= len(args) <= 2:
+        client.send("VIEW " + " ".join(args))
+    elif word == "focus":
+        client.send("FOCUS " + " ".join(args))
     elif word == "key" and args and args[0] in SPEED_KEYS:
         count = int(args[1]) if len(args) > 1 else 1
         delay = float(args[2]) if len(args) > 2 else 3.0
         press_speed_key(args[0], count, delay, client)
+    elif word == "key" and args and view_chord(args[0]):
+        count = int(args[1]) if len(args) > 1 else 1
+        delay = float(args[2]) if len(args) > 2 else 3.0
+        press_view_key(args[0], count, delay, client)
+    elif word == "kfocus" and args and parse_unit_id(args[0]) is not None:
+        chord = args[1] if len(args) > 1 else "f2"
+        if not view_chord(chord):
+            print(f"  unknown key {chord}")
+        else:
+            max_steps = int(args[2]) if len(args) > 2 else 40
+            key_focus(parse_unit_id(args[0]), chord, max_steps, 3.0, client)
     elif word == "raw" and args:
         client.send(" ".join(args))
     else:

@@ -44,7 +44,7 @@ def test_window_follows_dcs(qapp, app_rig) -> None:
 
     assert wait_until(qapp, lambda: link.connected and link.hook_version)
     window.refresh()
-    assert "Connected to DCS (hook fake-0.1.0)" in window.conn_label.text()
+    assert "Connected to DCS (hook fake-0.2.0)" in window.conn_label.text()
     assert window.clock_label.text() == "1:03.0"
     assert window.tod_label.text() == "Mission time 16:31:02"
     assert window.play_button.text() == "Play"
@@ -67,7 +67,7 @@ def test_window_sets_speed_within_limit(qapp, app_rig) -> None:
     assert sim.accel == 4
     log = window.log_view.toPlainText()
     assert "8x is above the 4x limit; using 4x" in log
-    assert log.count("speed key LCtrl+Z") == 3
+    assert log.count("speed step up") == 3  # by the hook: no keystrokes
 
     window.limit_combo.setCurrentIndex(window.limit_combo.findData(2))
     window.play_button.click()  # runs at 4x, above the new 2x limit -> paused, back to 2x
@@ -150,6 +150,54 @@ def test_window_seeks_to_a_tacview_bookmark(qapp, app_rig) -> None:
     m = panel.model
     past = {m.event_at(r).label for r in range(m.rowCount()) if m.is_past(r)}
     assert {"Running in", "idiot"} <= past
+    # The bookmark names the player's A-10C (Tacview 0x5701): F2 on DCS unit 0x1005700.
+    assert wait_until(qapp, lambda: "F2 view on fubar 1-1 | nicelife (1 step)" in window.log_view.toPlainText())
+    assert "showing fubar 1-1 | nicelife in F2…" in window.log_view.toPlainText()
+    assert sim.focused == 0x1005700
+
+
+def seek_to_idiot(qapp, app_rig, **sim_kwargs):
+    from pathlib import Path
+
+    sim, link, window = app_rig(start=50.0, time_scale=10, **sim_kwargs)
+    assert wait_until(qapp, lambda: link.connected and link.hook_version)
+    window.load_acmi(str(Path(__file__).parent / "data" / "sample_caucasus.zip.acmi"))
+    assert wait_until(qapp, lambda: window.events.acmi is not None)
+    return sim, link, window
+
+
+def go_to_idiot(qapp, window) -> None:
+    window.events.table.selectRow(1)  # "idiot" at 88.01
+    window.events.go_button.click()
+    assert wait_until(qapp, lambda: window.seek_status.text().startswith("Ready"), timeout=10)
+
+
+def test_window_focus_can_be_switched_off(qapp, app_rig) -> None:
+    sim, link, window = seek_to_idiot(qapp, app_rig)
+    window.focus_check.setChecked(False)
+    go_to_idiot(qapp, window)
+    wait_until(qapp, lambda: False, timeout=0.3)
+    assert sim.focused is None and "F2" not in window.log_view.toPlainText()
+
+
+def test_window_reports_an_aircraft_dcs_does_not_have(qapp, app_rig) -> None:
+    sim, link, window = seek_to_idiot(qapp, app_rig, aircraft=set())
+    go_to_idiot(qapp, window)
+    assert wait_until(qapp, lambda: "could not show the aircraft in F2: it is not in the replay at this point"
+                      in window.log_view.toPlainText())
+
+
+def test_window_with_an_old_hook_uses_keys_and_cannot_focus(qapp, app_rig, monkeypatch) -> None:
+    from conftest import load_fake_dcs
+
+    monkeypatch.setattr(load_fake_dcs(), "VERSION", "fake-0.1.0")
+    sim, link, window = seek_to_idiot(qapp, app_rig)
+    assert not link.takes_actions
+    go_to_idiot(qapp, window)
+    log = window.log_view.toPlainText()
+    assert "speed key LCtrl+Z" in log  # the old fake takes KEY for keystrokes
+    assert "can't show fubar 1-1 | nicelife in F2: update the DCS hook" in log
+    assert sim.focused is None
 
 
 def test_hook_check_and_install(qapp, tmp_path) -> None:
@@ -186,6 +234,7 @@ def test_settings_are_remembered(qapp) -> None:
     first.preroll_spin.setValue(12)
     first.postroll_spin.setValue(4)
     first.goto_mode.setCurrentIndex(first.goto_mode.findData("mission"))
+    first.focus_check.setChecked(False)
     first.events.checks[1][0].setChecked(True)  # Launches
     first.resize(1300, 700)
     first.close()
@@ -195,6 +244,7 @@ def test_settings_are_remembered(qapp) -> None:
     assert second.speed_combo.currentData() == 0.5
     assert (second.preroll_spin.value(), second.postroll_spin.value()) == (12, 4)
     assert second.goto_mode.currentData() == "mission"
+    assert not second.focus_check.isChecked()
     assert [box.isChecked() for box, _ in second.events.checks][:2] == [True, True]
     # Window size and splitter are stored (the headless test screen is too small to check the
     # restored size: Qt clamps windows to the screen).

@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QFont, QKeySequence
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -27,12 +28,12 @@ from PySide6.QtWidgets import (
 
 from ..dcs.keys import Step
 from ..dcs.link import DcsLink
-from ..dcs.protocol import Arrived, Disarmed, Error, Hello, Message, Pong, State
+from ..dcs.protocol import Arrived, Disarmed, Error, Focused, FocusFailed, Hello, Message, Pong, State
 from .. import hook_installer
 from ..dcs.speed import SpeedController
 from ..seek import Phase, SeekController, SeekError
 from ..settings import Settings
-from ..tacview.events import Event
+from ..tacview.events import Event, dcs_unit_id
 from ..timefmt import fmt_model, fmt_speed, fmt_tod, parse_clock, tod_to_model
 from .event_table import EventPanel
 
@@ -44,6 +45,16 @@ DEFAULT_PREROLL_S = 5.0
 STEP_KEYS = {Step.UP: "LCtrl+Z", Step.DOWN: "LAlt+Z", Step.NORMAL: "LShift+Z"}
 MODE_REPLAY, MODE_MISSION = "replay", "mission"
 ERROR_STYLE = "color: #c62828;"
+FOCUS_REASONS = {
+    "not_found": "it is not in the replay at this point",
+    "cycled": "F2 never showed it",
+    "max_steps": "F2 never showed it",
+    "no_camera": "DCS did not report the camera",
+    "unavailable": "DCS did not take the view command",
+    "cancelled": "cancelled",
+    "restart": "the track restarted",
+    "mission_end": "the mission ended",
+}
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +66,7 @@ class MainWindow(QMainWindow):
         self.seek = seek
         self.settings = settings
         self.saved_games_dir: Path | None = None  # None: ask Windows (tests point it elsewhere)
+        self._seek_event_obj: Event | None = None  # the event the current seek goes to, if any
         self.setWindowTitle("DCS Replay Helper")
 
         # connection
@@ -111,6 +123,11 @@ class MainWindow(QMainWindow):
         self.postroll_spin.setSpecialValueText("off")
         self.postroll_spin.setToolTip("After arriving, Play runs through the target and pauses this "
                                       "long after it. Off: Play just plays on.")
+        self.focus_check = QCheckBox("Show the event's aircraft (F2)")
+        self.focus_check.setChecked(True)
+        self.focus_check.setToolTip("When a seek to an event arrives, switch DCS to the F2 view of the "
+                                    "aircraft involved: the shooter, the lost or ejecting aircraft, or "
+                                    "the one a bookmark names.")
         self.seek_status = QLabel()
         self.seek_status.setWordWrap(True)
         goto_row = QHBoxLayout()
@@ -125,6 +142,8 @@ class MainWindow(QMainWindow):
         roll_row.addSpacing(16)
         roll_row.addWidget(QLabel("Post-roll"))
         roll_row.addWidget(self.postroll_spin)
+        roll_row.addSpacing(16)
+        roll_row.addWidget(self.focus_check)
         roll_row.addStretch(1)
         goto_box = QGroupBox("Seek")
         goto_layout = QVBoxLayout(goto_box)
@@ -315,6 +334,8 @@ class MainWindow(QMainWindow):
             value = st.get(key)
             if isinstance(value, (int, float)):
                 spin.setValue(value)
+        if isinstance(st.get("focus_aircraft"), bool):
+            self.focus_check.setChecked(st.get("focus_aircraft"))
         if isinstance(st.get("event_filters"), list):
             self.events.set_checked_filters(st.get("event_filters"))
         for key, restore in (("geometry", self.restoreGeometry), ("splitter", self.splitter.restoreState)):
@@ -328,6 +349,7 @@ class MainWindow(QMainWindow):
         self.preroll_spin.valueChanged.connect(lambda v: st.set("preroll", v))
         self.postroll_spin.valueChanged.connect(lambda v: st.set("postroll", v))
         self.events.filtersChanged.connect(lambda labels: st.set("event_filters", labels))
+        self.focus_check.toggled.connect(lambda on: st.set("focus_aircraft", on))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.settings is not None:
@@ -411,11 +433,12 @@ class MainWindow(QMainWindow):
         """A seek picked from the Tacview event list."""
         self.goto_mode.setCurrentIndex(self.goto_mode.findData(MODE_REPLAY))
         self.goto_edit.setText(f"{t:.2f}")
-        self._start_seek(t, f"{event.kind.value.lower()} '{event.label}' at {fmt_model(t)}")
+        self._start_seek(t, f"{event.kind.value.lower()} '{event.label}' at {fmt_model(t)}", event)
 
-    def _start_seek(self, target: float, what: str) -> None:
+    def _start_seek(self, target: float, what: str, event: Event | None = None) -> None:
         if self.seek is None:
             return
+        self._seek_event_obj = event
         try:
             self.seek.seek(target, preroll=self.preroll_spin.value(), postroll=self.postroll_spin.value(),
                            seek_speed=self._limit(), playback_speed=self._playback())
@@ -475,6 +498,18 @@ class MainWindow(QMainWindow):
         self._status(self.seek_status, f"Ready: paused at {fmt_model(stop_t)}, {event_t - stop_t:g} s before "
                                        f"the target at {fmt_model(event_t)}. {then}")
         self._log(f"ready at {fmt_model(stop_t)} (target {fmt_model(event_t)})")
+        self._focus_event_aircraft()
+
+    def _focus_event_aircraft(self) -> None:
+        e = self._seek_event_obj
+        if e is None or e.aircraft is None or not self.focus_check.isChecked():
+            return
+        who = e.aircraft_unit or f"#{e.aircraft:x}"
+        if not self.link.takes_actions:
+            self._log(f"can't show {who} in F2: update the DCS hook (Tools > Install / update DCS hook)")
+            return
+        self._log(f"showing {who} in F2…")
+        self.link.focus(dcs_unit_id(e.aircraft), e.aircraft_unit)
 
     def _on_segment_done(self, t: float) -> None:
         after = t - (self.seek.event_t or t)
@@ -492,7 +527,8 @@ class MainWindow(QMainWindow):
             self._status(self.speed_status, f"Setting {fmt_speed(self.speed.target)}…")
 
     def _on_speed_step(self, step: Step, before: float) -> None:
-        self._log(f"speed key {STEP_KEYS[step]} (at {fmt_speed(before)})")
+        how = f"step {step.value.lower()}" if self.link.takes_actions else f"key {STEP_KEYS[step]}"
+        self._log(f"speed {how} (at {fmt_speed(before)})")
 
     def _on_speed_reached(self, target: float) -> None:
         self._status(self.speed_status, f"Speed set to {fmt_speed(target)}")
@@ -533,6 +569,15 @@ class MainWindow(QMainWindow):
             self._log(f"paused at {msg.t:.3f} ({msg.over:.3f} s after the stop)")
         elif isinstance(msg, Disarmed) and msg.reason != "request":
             self._log(f"stop dropped: {msg.reason}")
+        elif isinstance(msg, Focused):
+            e = self._seek_event_obj
+            who = e.aircraft_unit if e is not None and e.aircraft is not None and \
+                dcs_unit_id(e.aircraft) == msg.id and e.aircraft_unit else f"unit {msg.id}"
+            steps = f" ({msg.steps} step{'s' * (msg.steps != 1)})" if msg.steps else ""
+            self._log(f"F2 view on {who}{steps}")
+        elif isinstance(msg, FocusFailed):
+            if msg.reason != "cancelled":
+                self._log(f"could not show the aircraft in F2: {FOCUS_REASONS.get(msg.reason, msg.reason)}")
         elif isinstance(msg, Error):
             self._log(f"DCS: {msg.text}")
         elif isinstance(msg, (Hello, Pong)):

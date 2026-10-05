@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from dataclasses import replace
 
@@ -10,7 +11,7 @@ pytest.importorskip("PySide6.QtCore")
 from PySide6.QtCore import QObject, Signal  # noqa: E402
 
 from conftest import load_fake_dcs, wait_until  # noqa: E402
-from replay_helper.dcs.keys import Step  # noqa: E402
+from replay_helper.dcs.keys import KeyPressError, Step  # noqa: E402
 from replay_helper.dcs.link import DcsLink  # noqa: E402
 from replay_helper.dcs.protocol import State  # noqa: E402
 from replay_helper.dcs.speed import AutoKeyBackend, SpeedController, is_ladder_speed, next_step  # noqa: E402
@@ -140,7 +141,7 @@ def test_gives_up_when_dcs_never_reacts(rig) -> None:
     ctrl.set_target(4)
     drive()
     assert keys.pressed == [U, U, U]
-    assert events[0][0] == "failed" and "did not react to 3 speed keys" in events[0][1]
+    assert events[0][0] == "failed" and "did not react to 3 speed steps" in events[0][1]
     assert not ctrl.busy and link.state.accel == 1
 
 
@@ -242,3 +243,35 @@ def test_sets_speed_on_fake_dcs(qapp, fake_dcs_server) -> None:
     assert wait_until(qapp, lambda: reached == [4.0, 1.0])
     ctrl.shutdown()
     link.stop()
+
+
+# --- how a step reaches DCS ------------------------------------------------------------------
+class SendLink:
+    def __init__(self, version: str | None) -> None:
+        self.hook_version = version
+        self.sent: list[str] = []
+
+    def send(self, line: str) -> None:
+        self.sent.append(line)
+
+
+@pytest.mark.parametrize("version", ["0.2.0", "fake-0.2.0"])
+def test_steps_go_through_the_hook_when_it_takes_them(version) -> None:
+    link = SendLink(version)
+    backend = AutoKeyBackend(link)
+    assert not backend.blocking  # no window focus, no worker thread
+    backend.press(Step.DOWN)
+    assert link.sent == ["SPEED DOWN"]
+    assert "replay" in backend.hint
+
+
+def test_older_hooks_get_keystrokes() -> None:
+    link = SendLink("fake-0.1.0")
+    backend = AutoKeyBackend(link)
+    backend.press(Step.UP)
+    assert link.sent == ["KEY UP"]  # an old fake DCS takes KEY
+    link.hook_version = "0.1.0"
+    assert backend.blocking and "Updating the DCS hook" in backend.hint
+    if sys.platform != "win32":
+        with pytest.raises(KeyPressError):
+            backend.press(Step.UP)  # real keystrokes: Windows only

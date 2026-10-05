@@ -6,10 +6,11 @@ library only.
 
     uv run python tools/fake_dcs.py [--start 0] [--duration 117.1] [--paused]
 
-Real DCS changes speed through keystrokes sent to its window. The fake has no window, so it
-takes the same steps as extra commands instead: KEY UP | KEY DOWN | KEY NORMAL (LCtrl+Z /
-LAlt+Z / LShift+Z). The speed ladder matches what DCS showed in the spike: above 1x each
-step up adds 1x; below 1x the steps halve.
+Speed steps come as SPEED UP | DOWN | NORMAL, as for hook 0.2.0, or as the older KEY UP |
+DOWN | NORMAL (what the app sends when it would press LCtrl+Z / LAlt+Z / LShift+Z). The speed
+ladder matches what DCS showed in the spike: above 1x each step up adds 1x; below 1x the
+steps halve. FOCUS <id> [name] answers FOCUSED at once for the ids in `aircraft` (all ids
+when it is None), FOCUS-FAILED reason=not_found otherwise.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import argparse
 import socket
 import time
 
-VERSION = "fake-0.1.0"
+VERSION = "fake-0.2.0"
 HOST = "127.0.0.1"
 STATE_PORT = 47810
 CMD_PORT = 47811
@@ -48,6 +49,7 @@ class FakeDcs:
         start_tod: float = 59400.0,
         date: str = "2018-02-01",
         theatre: str = "Caucasus",
+        aircraft: set[int] | None = None,
     ) -> None:
         self.t = start
         self.rt = 0.0
@@ -58,6 +60,8 @@ class FakeDcs:
         self.start_tod = start_tod
         self.date = date
         self.theatre = theatre
+        self.aircraft = aircraft
+        self.focused: int | None = None
         self.outbox: list[str] = [f"HELLO {VERSION}"]
         self.max_running_accel = 0.0  # fastest speed the replay actually ran at (for tests)
         self._next_state = 0.0
@@ -98,7 +102,17 @@ class FakeDcs:
         elif word == "DISARM":
             self.stop = None
             self.outbox.append("DISARMED reason=request")
-        elif word == "KEY" and args:
+        elif word == "FOCUS":
+            if not args:
+                return
+            if not args[0].isdigit():
+                self.outbox.append("ERR FOCUS needs a DCS id")
+            elif self.aircraft is not None and int(args[0]) not in self.aircraft:
+                self.outbox.append(f"FOCUS-FAILED id={args[0]} reason=not_found")
+            else:
+                self.focused = int(args[0])
+                self.outbox.append(f"FOCUSED id={args[0]} steps=1")
+        elif word in ("KEY", "SPEED") and args:
             step = args[0].upper()
             if step == "UP":
                 self.accel = accel_up(self.accel)

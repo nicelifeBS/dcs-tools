@@ -5,7 +5,9 @@ https://raia-software-inc.gitbook.io/tacview/technical-documentation/acmi-teleme
 
 Only what the Replay Helper needs is kept: global properties, every object's identity (names,
 type tags, coalition, parent, first and last appearance) and the events. Positions (T=) --
-nearly all of a recording -- are skipped without being parsed.
+nearly all of a recording -- are parsed only for aircraft, and only to answer one question:
+which aircraft was nearest when a missile, rocket, bomb or ejection seat appeared. That is the
+shooter, or the aircraft ejected from; DCS recordings name neither.
 
 Details the spec leaves out, found in real files (see tests/data):
   * Tacview stores bookmarks you add in its UI as ``Event=Bookmark|<ids>|<text>`` lines, with
@@ -17,6 +19,7 @@ Details the spec leaves out, found in real files (see tests/data):
 from __future__ import annotations
 
 import io
+import math
 import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -27,6 +30,12 @@ HEADER = "FileType=text/acmi/tacview"
 SEVEN_ZIP_MAGIC = b"7z\xbc\xaf\x27\x1c"
 BOOKMARK_SUFFIX = "￿"
 PROGRESS_EVERY_BYTES = 1 << 20
+LAUNCH_NEAR_M = 2000.0  # a weapon first seen further than this from any aircraft was not fired by one
+EJECT_NEAR_M = 2000.0
+EJECT_AFTER_S = 15.0  # an ejection seat may appear after its aircraft is gone (2 s seen in DCS)
+WEAPON_KINDS = ("Missile", "Rocket", "Bomb", "Torpedo")
+M_PER_DEG_LAT = 110_540.0
+M_PER_DEG_LON = 111_320.0
 
 
 class AcmiError(ValueError):
@@ -46,6 +55,7 @@ class AcmiObject:
     color: str | None = None
     parent: int | None = None
     removed_t: float | None = None
+    near_aircraft: int | None = None  # weapons and ejection seats: nearest aircraft when first seen
 
     @property
     def label(self) -> str:
@@ -60,6 +70,22 @@ class AcmiObject:
 
     def has_any(self, *tags: str) -> bool:
         return any(t in self.tags for t in tags)
+
+    @property
+    def is_aircraft(self) -> bool:
+        """An aeroplane or helicopter; not a weapon, debris or a pilot under a parachute."""
+        return (self.has_any("FixedWing", "Rotorcraft")
+                and not self.has_any("Weapon", "Misc", "Human", "Parachutist"))
+
+    @property
+    def is_weapon(self) -> bool:
+        return self.has("Weapon") and self.has_any(*WEAPON_KINDS)
+
+    @property
+    def is_ejection(self) -> bool:
+        """An ejection seat or ejected pilot: PILOT_* in most DCS modules, *_SEAT_* in some (F-4E)."""
+        name = (self.name or "").upper()
+        return name.startswith("PILOT_") or "_SEAT" in name or self.has("Parachutist")
 
 
 @dataclass
@@ -211,11 +237,26 @@ _OBJECT_TEXT = {"Name": "name", "Pilot": "pilot", "CallSign": "callsign", "Group
                 "Coalition": "coalition", "Color": "color"}
 
 
+def _parse_t(value: str, prev: list[float] | None) -> list[float] | None:
+    """lon|lat|alt (offsets from the reference point) from a T= value; blanks keep prev."""
+    parts = value.split("|", 3)
+    out = list(prev) if prev else [math.nan, math.nan, math.nan]
+    for i in range(min(3, len(parts))):
+        if parts[i]:
+            try:
+                out[i] = float(parts[i])
+            except ValueError:
+                pass
+    return out
+
+
 class _Reader:
     def __init__(self, path: Path) -> None:
         self.f = AcmiFile(path=path)
         self.t = 0.0
         self.saw_frame = False
+        self.ref_lat = 0.0
+        self.pos: dict[int, list[float]] = {}  # aircraft: last lon|lat|alt (kept after removal)
 
     def frame(self, t: float) -> None:
         self.t = t
@@ -237,6 +278,11 @@ class _Reader:
                 self.event(value)
             elif key in ("ReferenceTime", "RecordingTime"):
                 setattr(f, _GLOBALS[key], _parse_time(value))
+            elif key == "ReferenceLatitude":
+                try:
+                    self.ref_lat = float(value)
+                except ValueError:
+                    pass
             elif key in _GLOBALS:
                 setattr(f, _GLOBALS[key], value)
 
@@ -268,10 +314,13 @@ class _Reader:
 
     def object_props(self, oid: int, fields: list[str]) -> None:
         obj = self.f.objects.get(oid)
-        if obj is None:
+        new = obj is None
+        if new:
             obj = self.f.objects[oid] = AcmiObject(id=oid, first_t=self.t)
+        t_value = None
         for prop in fields:
             if prop.startswith("T="):
+                t_value = prop[2:]
                 continue
             key, sep, value = prop.partition("=")
             if not sep:
@@ -282,6 +331,41 @@ class _Reader:
                 obj.tags = frozenset(t.strip() for t in value.split("+") if t.strip())
             elif key == "Parent":
                 obj.parent = _hex_id(value)
+        if t_value is None:
+            return
+        if obj.is_aircraft:
+            self.pos[oid] = _parse_t(t_value, self.pos.get(oid))
+        elif new and (obj.is_weapon or obj.is_ejection):
+            obj.near_aircraft = self.nearest_aircraft(obj, _parse_t(t_value, None))
+
+    def distance(self, a: list[float], b: list[float]) -> float:
+        lat = math.radians(self.ref_lat + (a[1] + b[1]) / 2)
+        dx = (a[0] - b[0]) * M_PER_DEG_LON * math.cos(lat)
+        dy = (a[1] - b[1]) * M_PER_DEG_LAT
+        dz = (a[2] - b[2]) if not (math.isnan(a[2]) or math.isnan(b[2])) else 0.0
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def nearest_aircraft(self, obj: AcmiObject, at: list[float]) -> int | None:
+        """The aircraft nearest a newly seen weapon or ejection seat, on the same side.
+
+        Weapons: aircraft still there. Ejection seats: also aircraft gone in the last
+        EJECT_AFTER_S, as DCS can remove the aircraft before the seat appears.
+        """
+        if math.isnan(at[0]) or math.isnan(at[1]):
+            return None
+        ejection = obj.is_ejection
+        limit = EJECT_NEAR_M if ejection else LAUNCH_NEAR_M
+        best, best_d = None, limit
+        for aid, apos in self.pos.items():
+            a = self.f.objects[aid]
+            if a.removed_t is not None and (not ejection or self.t - a.removed_t > EJECT_AFTER_S):
+                continue
+            if obj.color and a.color and obj.color != a.color:
+                continue
+            d = self.distance(at, apos)
+            if d <= best_d:
+                best, best_d = aid, d
+        return best
 
     def remove(self, oid: int) -> None:
         obj = self.f.objects.get(oid)
@@ -308,12 +392,15 @@ class _Reader:
         comma = line.find(",")
         if comma < 0:
             return
-        # Fast path: most of a recording is "id,T=..." position updates for known objects.
+        # Fast path: most of a recording is "id,T=..." position updates for known objects; only
+        # aircraft positions are kept.
         rest = line[comma + 1:]
         oid = _hex_id(line[:comma])
         if oid is None:
             return
         if rest.startswith("T=") and "," not in rest and oid in self.f.objects:
+            if oid in self.pos:
+                self.pos[oid] = _parse_t(rest[2:], self.pos[oid])
             return
         fields = split_fields(rest)
         if oid == 0:

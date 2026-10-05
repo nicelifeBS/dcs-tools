@@ -1,9 +1,9 @@
-"""Time-acceleration keystrokes for DCS.
+"""Time-acceleration keystrokes for DCS, for hooks before 0.2.0.
 
-DCS gives Lua no way to set time acceleration (the iCommand ids are not reachable from any
-Lua state, see SPIKE.md), so the app presses DCS's own keys: LCtrl+Z (up), LAlt+Z (down),
-LShift+Z (back to 1x). DCS reads input through DirectInput, so they are sent as scan codes,
-and only to the focused DCS window.
+Hook 0.2.0 and later change the speed themselves (SPEED, through DCS.dispatchDigitalAction;
+see SPIKE.md rounds 4-5). With an older hook the app presses DCS's own keys: LCtrl+Z (up),
+LAlt+Z (down), LShift+Z (back to 1x). DCS reads input through DirectInput, so they are sent
+as scan codes, and only to the focused DCS window.
 
 Measured in DCS: above 1x each "up" adds 1x (1, 2, 3, 4, ...); below 1x the steps halve
 (1, 0.5, 0.25); keys pressed while paused take effect at once, and

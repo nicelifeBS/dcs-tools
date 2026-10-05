@@ -36,7 +36,7 @@ def collect(link: DcsLink) -> list:
 
 def test_connects_and_reads_state(qapp, connect) -> None:
     sim, link = connect(start=10.0)
-    assert link.hook_version == "fake-0.1.0"
+    assert link.hook_version == "fake-0.2.0"
     assert link.state.start_tod == 59400 and link.state.theatre == "Caucasus"
     assert wait_until(qapp, lambda: link.state.t > 10.1)
 
@@ -132,7 +132,7 @@ def test_asks_for_hook_version_until_known(qapp, fake_dcs_server) -> None:
     assert wait_until(qapp, lambda: sent.count("PING") >= 2, timeout=3)  # asked again
     assert link.hook_version is None
     lost[0] = False
-    assert wait_until(qapp, lambda: link.hook_version == "fake-0.1.0", timeout=3)
+    assert wait_until(qapp, lambda: link.hook_version == "fake-0.2.0", timeout=3)
     pings = sent.count("PING")
     wait_until(qapp, lambda: False, timeout=1.5)
     assert sent.count("PING") == pings  # stops asking once known

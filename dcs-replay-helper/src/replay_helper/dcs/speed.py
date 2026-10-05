@@ -1,12 +1,14 @@
-"""Closed-loop time-acceleration control through keystrokes.
+"""Closed-loop time-acceleration control, one DCS speed step at a time.
 
-The controller presses one key at a time and waits until DCS's reported acceleration (STATE
-accel=, from Export.LoGetModelTimeAcceleration) changes before pressing the next. A key DCS
-did not see is retried; one it never sees fails loudly instead of leaving the speed unknown.
+A step is DCS's own speed command, sent by the hook (SPEED UP|DOWN|NORMAL, hook 0.2.0 and
+later), or for older hooks the LCtrl/LAlt/LShift+Z keystroke. The controller sends one step
+at a time and waits until DCS's reported acceleration (STATE accel=, from
+Export.LoGetModelTimeAcceleration) changes before sending the next. A step DCS did not see is
+retried; one it never sees fails loudly instead of leaving the speed unknown.
 
 Only moves measured in DCS are used: "up" from 1x and above (+1x per step), "up" and "down"
 below 1x (doubling / halving), and "normal" (back to 1x). Going down from above 1x is done as
-"normal" then "up" -- what LAlt+Z does above 1x was never measured.
+"normal" then "up".
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .keys import KeyBackend, LinkKeyBackend, Step, WindowsKeyBackend
-from .protocol import State
+from .protocol import State, cmd_speed, hook_takes_actions
 
 EPS = 1e-3
 SLOW_SPEEDS = (1 / 16, 1 / 8, 1 / 4, 1 / 2)
@@ -172,8 +174,9 @@ class SpeedController(QObject):
                 self._pending = None
                 self._attempts += 1
                 if self._attempts >= self.MAX_ATTEMPTS:
-                    self._fail(f"DCS did not react to {self.MAX_ATTEMPTS} speed keys ({p.step.name}); "
-                               "is the DCS window open and not minimised?")
+                    hint = getattr(self._backend, "hint", "")
+                    self._fail(f"DCS did not react to {self.MAX_ATTEMPTS} speed steps ({p.step.name})"
+                               + (f"; {hint}" if hint else ""))
                     return
             else:
                 return
@@ -223,24 +226,40 @@ class SpeedController(QObject):
 
 
 class AutoKeyBackend:
-    """Keystrokes for real DCS; KEY commands on the link when talking to tools/fake_dcs.py."""
+    """How a speed step reaches DCS, chosen by the connected hook.
+
+    Hook 0.2.0 and later: SPEED on the link; the hook sends DCS's own speed command, so the
+    DCS window needs no focus. Older hooks: keystrokes to the DCS window, or KEY commands for
+    an old tools/fake_dcs.py.
+    """
 
     def __init__(self, link) -> None:
         self._link = link
         self._fake = LinkKeyBackend(link.send)
         self._windows: WindowsKeyBackend | None = None
 
+    def _by_hook(self) -> bool:
+        return hook_takes_actions(self._link.hook_version)
+
     def _is_fake(self) -> bool:
         return (self._link.hook_version or "").startswith("fake")
 
     @property
     def blocking(self) -> bool:
-        return not self._is_fake()
+        return not (self._by_hook() or self._is_fake())
+
+    @property
+    def hint(self) -> str:
+        if self._by_hook():
+            return "is the replay still running in DCS?"
+        return "is the DCS window open and not minimised? (Updating the DCS hook removes the need)"
 
     def press(self, step: Step) -> None:
-        if self._is_fake():
+        if self._by_hook():
+            self._link.send(cmd_speed(step.value))
+        elif self._is_fake():
             self._fake.press(step)
-            return
-        if self._windows is None:
-            self._windows = WindowsKeyBackend()
-        self._windows.press(step)
+        else:
+            if self._windows is None:
+                self._windows = WindowsKeyBackend()
+            self._windows.press(step)

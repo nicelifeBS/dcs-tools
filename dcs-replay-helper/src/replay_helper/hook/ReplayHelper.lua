@@ -3,10 +3,17 @@
 -- =====================================================================================
 -- Install as:  <Saved Games>\DCS\Scripts\Hooks\ReplayHelper.lua   (restart DCS)
 --
--- Reports the replay clock to the Replay Helper app and pauses the sim on an exact model
--- time. Time acceleration is NOT done here: the iCommand ids for it are not reachable from
--- any Lua state, so the app sends LCtrl/LAlt/LShift+Z keystrokes to DCS and reads the result
--- back from accel= below.
+-- Reports the replay clock to the Replay Helper app, pauses the sim on an exact model time,
+-- changes time acceleration, and puts the F2 view on a given aircraft.
+--
+-- Speed and views are DCS input commands sent through DCS.dispatchDigitalAction, the only
+-- route that reaches them during a replay (LoSetCommand from this state is ignored; see
+-- SPIKE.md rounds 4-6): iCommandAccelerate 53, iCommandDecelerate 191, iCommandNoAcceleration
+-- 246, iCommandViewAir 8. 8 is F2: from another view it shows the player's aircraft, in F2 it
+-- steps to the next aircraft (all aircraft, by DCS id). No call sets the viewed unit or says
+-- which it is, so FOCUS steps F2 and works out the viewed unit from the camera: the one
+-- straight ahead (LoGetCameraPosition's x axis is forward), with the camera not inside
+-- another unit (the cockpit).
 --
 --   hook -> app   127.0.0.1:47810
 --     HELLO <version>
@@ -15,10 +22,16 @@
 --           date=<YYYY-MM-DD or -> theatre=<name or ->                       (~10 Hz)
 --     ARMED target=<t> now=<t>         ARRIVED t=<t> target=<t> over=<s>
 --     DISARMED reason=<request|restart|mission_end>
+--     FOCUSED id=<dcs id> steps=<n>
+--     FOCUS-FAILED id=<dcs id or -> reason=<not_found|unavailable|no_camera|cycled|max_steps|
+--                                          cancelled|restart|mission_end>
 --     PONG <version>                   ERR <text>
 --
 --   app -> hook   127.0.0.1:47811
 --     PING | PAUSE | RESUME | ARMSTOP <model t> | DISARM
+--     SPEED UP|DOWN|NORMAL             one time-acceleration step; the result shows in accel=
+--     FOCUS <dcs id> [unit name]       F2 on that aircraft (by id, else by unit name);
+--                                      FOCUS alone cancels
 --
 -- The stop is checked here, every frame, because a round trip to the app costs ~100 ms of
 -- real time -- 0.4 s of model time at 4x. Measured in DCS: 0.002 s late at 1x, 0.015 s at 4x.
@@ -29,7 +42,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "0.1.0"
+local VERSION = "0.2.0"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> app
@@ -40,6 +53,14 @@ local SPEED_WINDOW       = 0.5    -- real seconds per speed sample
 local STOPPED_RATIO      = 0.004  -- below this the sim is paused, not in slow motion (1/64x = 0.0156)
 local RESTART_JUMP       = 1.0    -- model time going back by more than this means the track restarted
 local MAX_CMDS_PER_FRAME = 16
+
+local ACTION_SPEED = { UP = 53, DOWN = 191, NORMAL = 246 }  -- iCommandAccelerate & co.
+local ACTION_VIEW_AIR  = 8      -- iCommandViewAir: F2
+local FOCUS_STEP_S     = 0.1    -- real seconds between F2 steps (0.05 was enough in DCS)
+local FOCUS_MAX_STEPS  = 150
+local VIEW_MAX_DIST    = 5000   -- metres: a unit further from the camera is not the one viewed
+local VIEW_MAX_OFF     = 15     -- degrees off the camera axis: 0-2 usually, 7 seen just after a switch
+local INSIDE_DIST      = 10     -- metres: a camera this close to another unit is in its cockpit
 
 -- -------------------------------------------------------------------------------------
 -- helpers
@@ -76,6 +97,12 @@ end
 local function export_fn(name)
     if type(Export) == "table" and type(Export[name]) == "function" then return Export[name] end
     return nil
+end
+
+local function action(id)
+    local f = dcs_fn("dispatchDigitalAction")
+    if type(f) ~= "function" then return false end
+    return (pcall(f, id))
 end
 
 -- -------------------------------------------------------------------------------------
@@ -220,6 +247,127 @@ local function check_stop(m)
 end
 
 -- -------------------------------------------------------------------------------------
+-- camera: which aircraft is in view, and F2 stepping to one
+-- -------------------------------------------------------------------------------------
+local function vec(t)
+    if type(t) ~= "table" then return nil end
+    local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+    if x and y and z then return { x = x, y = y, z = z } end
+    return nil
+end
+
+-- Angle in degrees between d and the unit vector-ish axis a.
+local function angle_deg(d, a)
+    local ld = math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+    local la = math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+    if ld == 0 or la == 0 then return 180 end
+    local c = (d.x * a.x + d.y * a.y + d.z * a.z) / (ld * la)
+    return math.deg(math.acos(math.max(-1, math.min(1, c))))
+end
+
+-- id -> { name, pos } for every unit DCS exports; nil if it exports none.
+local function world_units()
+    local objs = call(export_fn("LoGetWorldObjects"))
+    if type(objs) ~= "table" then return nil end
+    local units = {}
+    for id, o in pairs(objs) do
+        if type(o) == "table" and tonumber(id) then
+            units[tonumber(id)] = { unit = o.UnitName, pos = vec(o.Position) }
+        end
+    end
+    return units
+end
+
+-- The id of the unit in view, or nil (cockpit, free camera, nothing ahead). Second value: a
+-- reason when it can't be told at all.
+local function viewed_id(units)
+    local cam = call(export_fn("LoGetCameraPosition"))
+    local p, x = type(cam) == "table" and vec(cam.p), type(cam) == "table" and vec(cam.x)
+    if not (p and x) then return nil, "no_camera" end
+    -- The nearest unit close to the line of sight: a unit further down the same line (a
+    -- formation ahead, a ship below) is not the one F2 is showing.
+    local best, best_dist, nearest, nearest_dist
+    for id, u in pairs(units) do
+        if u.pos then
+            local d = { x = u.pos.x - p.x, y = u.pos.y - p.y, z = u.pos.z - p.z }
+            local dist = math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+            if dist <= VIEW_MAX_DIST then
+                if angle_deg(d, x) <= VIEW_MAX_OFF and (not best_dist or dist < best_dist) then
+                    best, best_dist = id, dist
+                end
+                if not nearest_dist or dist < nearest_dist then nearest, nearest_dist = id, dist end
+            end
+        end
+    end
+    if not best then return nil end
+    if nearest ~= best and nearest_dist < INSIDE_DIST then return nil end  -- in a cockpit
+    return best
+end
+
+local focus = { target = nil }
+
+local function focus_end(line)
+    focus.target = nil
+    send(line)
+end
+
+local function focus_fail(reason)
+    if focus.target then
+        sayf("focus on %d failed: %s", focus.target, reason)
+        focus_end(string.format("FOCUS-FAILED id=%d reason=%s", focus.target, reason))
+    end
+end
+
+-- One F2 step per FOCUS_STEP_S until the target is in view. A full cycle (back to the first
+-- unit seen) means F2 can't reach it.
+local function focus_tick(r)
+    if not focus.target or r < focus.next_rt then return end
+    local units = world_units()
+    if not units then
+        focus_fail("unavailable")
+        return
+    end
+    if not units[focus.target] then
+        focus_fail("not_found")  -- destroyed or despawned meanwhile
+        return
+    end
+    local id, why = viewed_id(units)
+    if why then
+        focus_fail(why)
+        return
+    end
+    if id == focus.target then
+        focus_end(string.format("FOCUSED id=%d steps=%d", focus.target, focus.steps))
+        return
+    end
+    if id then
+        focus.waited = false
+        if focus.first == nil then
+            focus.first = id
+        elseif id == focus.first then
+            focus_fail("cycled")
+            return
+        end
+    elseif focus.steps > 0 and not focus.waited then
+        -- Nothing in view just after an F2 step: the camera may still be swinging onto the
+        -- next aircraft. Look once more before stepping past it.
+        focus.waited = true
+        focus.next_rt = r + FOCUS_STEP_S
+        return
+    end
+    if focus.steps >= FOCUS_MAX_STEPS then
+        focus_fail("max_steps")
+        return
+    end
+    if not action(ACTION_VIEW_AIR) then
+        focus_fail("unavailable")
+        return
+    end
+    focus.steps = focus.steps + 1
+    focus.next_rt = r + FOCUS_STEP_S
+end
+
+-- -------------------------------------------------------------------------------------
 -- commands
 -- -------------------------------------------------------------------------------------
 local handlers = {}
@@ -265,6 +413,46 @@ handlers.DISARM = function()
     end
 end
 
+handlers.SPEED = function(arg)
+    local id = ACTION_SPEED[tostring(arg):upper():match("^%s*(%a+)%s*$") or ""]
+    if not id then
+        send("ERR SPEED needs UP, DOWN or NORMAL")
+        return
+    end
+    if not action(id) then send("ERR SPEED unavailable: no DCS.dispatchDigitalAction") end
+end
+
+-- FOCUS <dcs id> [unit name]: the id is tried first, then an exact unit name.
+handlers.FOCUS = function(arg)
+    local id, name = tostring(arg):match("^%s*(%d+)%s*(.-)%s*$")
+    if focus.target then focus_fail("cancelled") end
+    if not id then
+        if not arg:match("^%s*$") then send("ERR FOCUS needs a DCS id") end
+        return
+    end
+    id = tonumber(id)
+    local units = world_units()
+    if not units then
+        send(string.format("FOCUS-FAILED id=%d reason=unavailable", id))
+        return
+    end
+    if not units[id] and name ~= "" then
+        for uid, u in pairs(units) do
+            if u.unit == name then id = uid break end
+        end
+    end
+    if not units[id] then
+        send(string.format("FOCUS-FAILED id=%d reason=not_found", id))
+        return
+    end
+    if type(dcs_fn("dispatchDigitalAction")) ~= "function" then
+        send(string.format("FOCUS-FAILED id=%d reason=unavailable", id))
+        return
+    end
+    focus.target, focus.steps, focus.first, focus.waited = id, 0, nil, false
+    focus.next_rt = call(dcs_fn("getRealTime")) or 0  -- the first check runs this frame
+end
+
 local function dispatch(line)
     line = tostring(line):gsub("%s+$", "")
     local word, arg = line:match("^(%S+)%s*(.*)$")
@@ -301,6 +489,7 @@ local function on_frame()
     if sim.last_m and m < sim.last_m - RESTART_JUMP then
         sayf("model time went back %.3f -> %.3f: track restarted", sim.last_m, m)
         disarm("restart")
+        focus_fail("restart")
         reset_clock()
         pcall(read_mission_info)
     end
@@ -311,6 +500,7 @@ local function on_frame()
     local r = call(dcs_fn("getRealTime"))
     if type(r) ~= "number" then return end
     measure(m, r)
+    focus_tick(r)
 
     if r >= sim.next_state_rt then
         sim.next_state_rt = r + STATE_INTERVAL
@@ -332,6 +522,7 @@ local callbacks = {}
 function callbacks.onMissionLoadEnd()
     sim.in_mission = true
     stop.target = nil
+    focus.target = nil
     reset_clock()
     pcall(read_mission_info)
     sayf("mission loaded: start_time=%s date=%s theatre=%s track=%s",
@@ -341,6 +532,7 @@ end
 
 function callbacks.onSimulationStop()
     disarm("mission_end")
+    focus_fail("mission_end")
     sim.in_mission = false
 end
 

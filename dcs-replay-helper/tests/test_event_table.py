@@ -102,8 +102,8 @@ def test_filters(qapp) -> None:
     assert proxy.rowCount() == 5
     proxy.set_text("agr")
     assert proxy.rowCount() == 1
-    proxy.set_text("NICELIFE")  # matches labels and units, any case
-    assert proxy.rowCount() == 3
+    proxy.set_text("NICELIFE")  # matches labels and units, any case: every event is the player's
+    assert proxy.rowCount() == 5
 
 
 def test_panel_loads_and_requests_seek(qapp) -> None:
