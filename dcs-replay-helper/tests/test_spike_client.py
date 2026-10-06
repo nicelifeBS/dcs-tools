@@ -31,3 +31,8 @@ def test_view_chord(name: str, scans: list[int]) -> None:
 @pytest.mark.parametrize("name", ["x", "alt+x", "num+", "up", "meta+f2", "alt+"])
 def test_view_chord_rejects_unknown_keys(name: str) -> None:
     assert client.view_chord(name) is None
+
+
+@pytest.mark.parametrize("notches,data", [(1, 120), (3, 360), (-1, 0xFFFFFF88), (-2, 0xFFFFFF10)])
+def test_wheel_data_is_the_dword_of_the_signed_delta(notches: int, data: int) -> None:
+    assert client.wheel_data(notches) == data

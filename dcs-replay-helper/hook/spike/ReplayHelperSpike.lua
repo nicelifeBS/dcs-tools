@@ -56,7 +56,8 @@
 --                            unit, group and (weapons) the aircraft that probably fired it.
 --                            Paused, it shows the last speed measured while the sim ran
 --   FINDCAM [subdir]         scan Config (or subdir) for the free-camera / camera-speed
---                            bindings; then GLOBALS <name part> for the numeric ids
+--                            bindings (keys and mouse wheel); then GLOBALS <name part> for the
+--                            numeric ids
 --
 -- A unit counts as viewed only when it is within VIEW_MAX_OFF degrees of the camera's forward
 -- axis and the camera is not inside another unit (its cockpit).
@@ -476,11 +477,13 @@ end
 -- the command name and the label shown in Options > Controls, e.g.
 --   {combos = {{key = 'Num*', reformers = {'LAlt'}}}, down = iCommandView..., name = _('Camera forward')}
 -- so list every line that mentions the camera together with speed or movement, and any line
--- about speed in a view config file (View.lua has the camera's speed and acceleration).
+-- about speed in a view config file (View.lua has the camera's speed and acceleration). The
+-- mouse wheel changes the free camera's speed too, so a camera line with a wheel counts.
 local function camera_line(l, short)
     if l:find("camera", 1, true)
         and (l:find("speed", 1, true) or l:find("forward", 1, true) or l:find("backward", 1, true)
-            or l:find("move", 1, true) or l:find("accel", 1, true)) then
+            or l:find("move", 1, true) or l:find("accel", 1, true) or l:find("wheel", 1, true)
+            or l:find("mouse_z", 1, true)) then
         return true
     end
     return short:lower():find("view", 1, true) ~= nil and l:find("speed", 1, true) ~= nil

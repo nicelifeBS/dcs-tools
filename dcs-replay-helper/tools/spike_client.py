@@ -57,6 +57,10 @@ commands (case-insensitive):
                          Windows only: press the key `count` times (default 5), `gap` seconds
                          apart (default 1.0), and show `camv` after each press: the camera's
                          speed steps, forwards or backwards
+  kwheel up|down [count] [gap] [notches]
+                         Windows only: turn the mouse wheel in DCS (the cursor must be over its
+                         window) `count` times (default 5), `gap` seconds apart (default 1.0),
+                         `notches` per turn (default 1), and show `camv` after each turn
   track on|off           sample aircraft, helicopters and weapons for their speeds (round 7)
   movers [radius m]      the tracked objects, nearest to the camera first, with speed, unit,
                          group and (weapons) who probably fired them. Paused: the last speed
@@ -185,19 +189,16 @@ def _press_chord(scans: list[int]) -> None:
     _send_scancodes([(s, False) for s in scans] + [(s, True) for s in reversed(scans)])
 
 
-def _send_scancodes(sequence: list[tuple[int, bool]]) -> None:
-    """Send (scan code, key_up) pairs with SendInput. DCS reads DirectInput, so scan codes."""
+def _win_input():
+    """(user32, INPUT, KEYBDINPUT, MOUSEINPUT, _INPUTUNION): the SendInput structures."""
     import ctypes
     from ctypes import wintypes
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE = 1, 0x0001, 0x0002, 0x0008
 
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
                     ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
 
-    class MOUSEINPUT(ctypes.Structure):  # largest union member; sets sizeof(INPUT)
+    class MOUSEINPUT(ctypes.Structure):  # also the largest union member; sets sizeof(INPUT)
         _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
                     ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
 
@@ -207,14 +208,42 @@ def _send_scancodes(sequence: list[tuple[int, bool]]) -> None:
     class INPUT(ctypes.Structure):
         _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
 
+    return ctypes.WinDLL("user32", use_last_error=True), INPUT, KEYBDINPUT, MOUSEINPUT, _INPUTUNION
+
+
+def _send_input(user32, INPUT, union) -> None:
+    import ctypes
+
+    if user32.SendInput(1, ctypes.byref(INPUT(type=union[0], u=union[1])), ctypes.sizeof(INPUT)) != 1:
+        raise OSError(f"SendInput failed (error {ctypes.get_last_error()})")
+
+
+def _send_scancodes(sequence: list[tuple[int, bool]]) -> None:
+    """Send (scan code, key_up) pairs with SendInput. DCS reads DirectInput, so scan codes."""
+    user32, INPUT, KEYBDINPUT, _, _INPUTUNION = _win_input()
+    INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE = 1, 0x0001, 0x0002, 0x0008
+
     for scan, key_up in sequence:
         flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
         if scan & EXTENDED:
             flags |= KEYEVENTF_EXTENDEDKEY
-        inp = INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=KEYBDINPUT(0, scan & 0xFF, flags, 0, 0)))
-        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
-            raise OSError(f"SendInput failed (error {ctypes.get_last_error()})")
+        _send_input(user32, INPUT, (INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, scan & 0xFF, flags, 0, 0))))
         time.sleep(0.05)  # hold long enough for DCS to see it on at least one frame
+
+
+WHEEL_DELTA = 120  # one notch
+
+
+def wheel_data(notches: int) -> int:
+    """mouseData for a wheel move: up is positive, sent as the DWORD two's complement."""
+    return (notches * WHEEL_DELTA) & 0xFFFFFFFF
+
+
+def _send_wheel(notches: int) -> None:
+    """Turn the mouse wheel `notches` notches (negative: down) over the window under the cursor."""
+    user32, INPUT, _, MOUSEINPUT, _INPUTUNION = _win_input()
+    INPUT_MOUSE, MOUSEEVENTF_WHEEL = 0, 0x0800
+    _send_input(user32, INPUT, (INPUT_MOUSE, _INPUTUNION(mi=MOUSEINPUT(0, 0, wheel_data(notches), MOUSEEVENTF_WHEEL, 0, 0))))
 
 
 def _focus_dcs() -> bool:
@@ -278,6 +307,25 @@ def key_camera(name: str, count: int, gap: float, client: Client) -> None:
         time.sleep(gap)
         reply = client.request("CAMV", "CAMV", timeout=2.0)
         client.log.write(f"## kcam {name} press {n}: {reply}")
+
+
+def wheel_camera(direction: str, count: int, gap: float, notches: int, client: Client) -> None:
+    """Turn the wheel and read the camera's speed after each turn (the wheel also changes it)."""
+    if sys.platform != "win32":
+        print("  mouse injection only works on Windows")
+        return
+    focused = _focus_dcs()
+    print(f"  DCS window focus: {'ok' if focused else 'FAILED -- click into DCS now'}; "
+          "keep the mouse cursor over the DCS window; starting in 3s")
+    time.sleep(3.0)
+    client.log.write(f"## kwheel {direction} x{count} gap={gap} notches={notches} "
+                     f"(focus {'ok' if focused else 'failed'})")
+    client.request("CAMV", "CAMV", timeout=2.0)  # before the first turn
+    for n in range(1, count + 1):
+        _send_wheel(notches if direction == "up" else -notches)
+        time.sleep(gap)
+        reply = client.request("CAMV", "CAMV", timeout=2.0)
+        client.log.write(f"## kwheel {direction} turn {n}: {reply}")
 
 
 AIMED_ID = re.compile(r"\baimed id=(\d+)/")
@@ -367,6 +415,11 @@ def handle(client: Client, text: str) -> bool:
         client.send("MOVERS " + " ".join(args))
     elif word == "findcam" and len(args) <= 1:
         client.send("FINDCAM " + " ".join(args))
+    elif word == "kwheel" and args and args[0] in ("up", "down"):
+        count = int(args[1]) if len(args) > 1 else 5
+        gap = float(args[2]) if len(args) > 2 else 1.0
+        notches = int(args[3]) if len(args) > 3 else 1
+        wheel_camera(args[0], count, gap, notches, client)
     elif word == "kcam" and args and view_chord(args[0]):
         count = int(args[1]) if len(args) > 1 else 5
         gap = float(args[2]) if len(args) > 2 else 1.0

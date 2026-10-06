@@ -734,6 +734,7 @@ def test_findcam_lists_camera_speed_bindings(hook: Hook, tmp_path: Path) -> None
         "name = _('F11 Camera Moving Forward')},\n"
         "{down = iCommandViewCameraSpeedUp, name = _('Camera speed up')},\n"
         "{down = iCommandViewAir, name = _('F2 view')},\n"
+        "{combos = {{key = 'MOUSE_WHEEL_UP'}}, down = iCommandViewCamWheelFaster, name = _('Camera F11 wheel')},\n"
         "{down = iCommandPlaneGear, name = _('Gear')},\n")
     (tmp_path / "Config" / "View").mkdir(parents=True)
     (tmp_path / "Config" / "View" / "View.lua").write_text("Cameras = {\n  speed = 5.0,\n  fov = 60,\n}\n")
@@ -745,9 +746,10 @@ def test_findcam_lists_camera_speed_bindings(hook: Hook, tmp_path: Path) -> None
             "{'LAlt'}}}, down = iCommandViewCamForward, name = _('F11 Camera Moving Forward')},") in replies
     assert ("CAMCMD Config\\Input\\View\\keyboard.lua:2 {down = iCommandViewCameraSpeedUp, "
             "name = _('Camera speed up')},") in replies
+    assert any(r.startswith("CAMCMD Config\\Input\\View\\keyboard.lua:4 {combos = {{key = 'MOUSE_WHEEL_UP'") for r in replies)
     assert "CAMCMD Config\\View\\View.lua:2 speed = 5.0," in replies
     assert not any("iCommandViewAir" in r or "Gear" in r or "options.lua" in r or "fov" in r for r in replies)
-    assert replies[-1].startswith("FINDCAM done: 3 lua files, 3 hits")
+    assert replies[-1].startswith("FINDCAM done: 3 lua files, 4 hits")
 
 
 def test_findcam_without_lfs(hook: Hook) -> None:
