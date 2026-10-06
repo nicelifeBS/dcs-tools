@@ -64,7 +64,17 @@ If the speed commands are steps (like time acceleration), the app can steer the 
 | 9 | `movers 5000` | Only the objects within 5 km of the camera |
 | 10 | `q` | Upload `spike_session.log` and the `REPLAYHELPER` lines from `dcs.log`. Say what the camera did on screen in 3–6 |
 
+**Result so far (steps 1–5b, run by hand):** LAlt+`/` and LAlt+`*` and the mouse wheel all change the camera's speed. **The wheel is the finer control. Neither keys nor wheel do anything while the replay is paused.** So the camera can't be set in pause mode as asked. Remaining routes, tested next:
+
+| # | Do | Look for |
+|---|----|----------|
+| 11 | Set the camera moving while the replay runs (keys or wheel), then `p`, then `camv` for a few seconds, then `r` | Does a speed set while running survive a pause? Does the camera keep flying while paused (`CAMV speed=` above 0 with `paused=true`), or stand still and move on again after `r`? |
+| 12 | `r`, then `slow` (1x, then six steps down to 1/64x), then `camv` | `CAMV ... accel=0.016`. Does the camera still move at its speed in slow motion, or slowed by the same factor? Compare `speed=` with what you saw at 1x (`accel=1.000`) |
+| 13 | In slow motion, `kcam alt+num* 5 1.0`, then `kwheel up 5 1.0`, then `kwheel down 5 1.0` | Do the keys and the wheel still step the speed at 1/64x? If so, the app can match the speed in near-pause: model time moves 0.016 s per second there |
+| 14 | At 1x then at 1/64x, `movers`, and note `need=` for an aircraft next to the camera | `need=` is the object's speed times the current acceleration, the speed a camera needs if it flies in real time. Set the camera to that at 1/64x and play at 1x: does it keep up with the aircraft, or fall behind by the acceleration factor? That tells whether the camera speed follows the replay speed |
+
 **What the results decide:**
+- **Pause mode:** with keys and wheel ignored while paused, matching has to happen in slow motion: the app resumes at the slowest speed, steps the camera speed, then pauses or goes back to the playback speed. If 12–13 show the keys and wheel work there, that costs about a second of real time and 0.02 s of replay time.
 - **Speeds:** if the measured speeds look right, the app gets an object list (aircraft, helicopters, missiles; kind, name, group, pilot, speed in kt, km/h and m/s, distance) fed by the hook, and a *Match camera speed* button.
 - **Camera:** steps, an axis or a setting decides how the controller works and how close it can get; no working route (no id, keys only on Windows) means keystrokes, with the focus problems that brings.
 - **Missiles:** if `ballistic` lists nothing, the missile speeds come from the Tacview recording instead.

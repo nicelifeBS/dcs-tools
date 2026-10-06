@@ -904,6 +904,10 @@ end
 
 local function mover_line(e, now_m)
     local u = e.u
+    -- The free camera may fly in real time while the object moves in model time: then a
+    -- camera that keeps up needs speed * acceleration. CAMV at two accelerations tells.
+    local accel = commanded_accel()
+    local need = e.speed and accel > 0 and string.format(" need=%.1f", e.speed * accel) or ""
     local speed = e.speed and string.format("%.1f m/s %.0f kt %.0f km/h", e.speed,
         e.speed * MS_TO_KT, e.speed * 3.6) or "unknown"
     local v = e.v and string.format("(%.1f,%.1f,%.1f)", e.v.x, e.v.y, e.v.z) or "-"
@@ -911,6 +915,7 @@ local function mover_line(e, now_m)
         u.id, u.id, e.kind, type_levels(u), tostring(u.name), tostring(u.unit), tostring(u.group),
         tostring(u.coalition), tostring(u.human), speed, v, e.vm and string.format("%.1fs", now_m - e.vm) or "-")
     if e.dist then line = line .. string.format(" dist=%.0f", e.dist) end
+    line = line .. need
     if e.kind == "weapon" then line = line .. " from=" .. tostring(e.from or "-") end
     return oneline(line)
 end
@@ -1134,9 +1139,9 @@ handlers.CAMV = function()
         report("CAMV unknown: no camera position yet (LoGetCameraPosition), or no sample yet")
         return
     end
-    report(string.format("CAMV speed=%.2f m/s fwd=%s m/s age=%.2fs paused=%s via=%s",
+    report(string.format("CAMV speed=%.2f m/s fwd=%s m/s age=%.2fs paused=%s accel=%.3f via=%s",
         camv.speed, opt(camv.fwd), r - (camv.at or r), tostring(call(dcs_fn("getPause"))),
-        tostring(view_source.camera)))
+        commanded_accel(), tostring(view_source.camera)))
 end
 
 handlers.TRACK = function(arg)

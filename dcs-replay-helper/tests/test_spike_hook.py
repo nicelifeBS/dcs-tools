@@ -568,7 +568,8 @@ def test_camv_keeps_measuring_while_the_sim_is_paused(speeds: Hook) -> None:
     speeds.run(1.0)
     assert speeds.mock.paused is True
     assert float(fields(speeds.cmd("CAMV")[0])["speed"]) == pytest.approx(25, abs=0.01)
-    assert fields(speeds.cmd("CAMV")[0])["paused"] == "true"
+    paused = fields(speeds.cmd("CAMV")[0])
+    assert paused["paused"] == "true" and "accel" in paused
 
 
 def test_camv_unknown_without_a_camera(hook: Hook) -> None:
@@ -613,6 +614,7 @@ def test_track_measures_aircraft_helicopter_and_missile_speeds(speeds: Hook) -> 
     assert movers["Hokum 1-1"]["kind"] == "heli"
     assert movers["AIM-120C"]["kind"] == "weapon"
     assert "speed=200.0 m/s 389 kt 720 km/h" in movers["Viper 1-1"]["line"]
+    assert "need=" not in movers["Viper 1-1"]["line"]  # no time acceleration reported by this mock
     assert "speed=50.0 m/s" in movers["Hokum 1-1"]["line"]
     assert "speed=600.0 m/s" in movers["AIM-120C"]["line"]
     assert 'group="Viper"' in movers["Viper 1-1"]["line"]
@@ -646,6 +648,16 @@ def test_a_weapon_with_no_aircraft_near_has_no_origin(speeds: Hook) -> None:
     speeds.cmd("TRACK on")
     speeds.run(8.0)
     assert mover_lines(speeds.cmd("MOVERS"))["AIM-120C"]["line"].endswith("from=-")
+
+
+def test_movers_say_what_camera_speed_keeps_up_at_the_current_acceleration(speeds: Hook) -> None:
+    speeds.lua.execute("Export.LoGetModelTimeAcceleration = function() return 0.25 end")
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    movers = mover_lines(speeds.cmd("MOVERS"))
+    assert movers["Viper 1-1"]["need"] == "50.0"  # 200 m/s of model time at a quarter of real time
+    assert movers["AIM-120C"]["need"] == "150.0"
+    assert fields(speeds.cmd("CAMV")[0])["accel"] == "0.250"
 
 
 def test_movers_while_paused_keep_the_last_speed_and_say_how_old_it_is(speeds: Hook) -> None:

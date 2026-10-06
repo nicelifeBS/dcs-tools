@@ -61,6 +61,9 @@ commands (case-insensitive):
                          Windows only: turn the mouse wheel in DCS (the cursor must be over its
                          window) `count` times (default 5), `gap` seconds apart (default 1.0),
                          `notches` per turn (default 1), and show `camv` after each turn
+  slow [steps]           1x, then `steps` (default 6) time-deceleration steps, 0.7 s apart:
+                         the slowest the replay can run (1/64x), as close to paused as the
+                         camera keys can get. `key normal` / `digital 246` brings back 1x
   track on|off           sample aircraft, helicopters and weapons for their speeds (round 7)
   movers [radius m]      the tracked objects, nearest to the camera first, with speed, unit,
                          group and (weapons) who probably fired them. Paused: the last speed
@@ -328,6 +331,16 @@ def wheel_camera(direction: str, count: int, gap: float, notches: int, client: C
         client.log.write(f"## kwheel {direction} turn {n}: {reply}")
 
 
+def slow_motion(steps: int, client: Client) -> None:
+    """Back to 1x, then `steps` decelerations (each one halves the speed below 1x)."""
+    client.send("DIGITAL 246")
+    for _ in range(steps):
+        time.sleep(0.7)
+        client.send("DIGITAL 191")
+    time.sleep(0.7)
+    client.send("CAMV")
+
+
 AIMED_ID = re.compile(r"\baimed id=(\d+)/")
 
 
@@ -415,6 +428,8 @@ def handle(client: Client, text: str) -> bool:
         client.send("MOVERS " + " ".join(args))
     elif word == "findcam" and len(args) <= 1:
         client.send("FINDCAM " + " ".join(args))
+    elif word == "slow" and len(args) <= 1:
+        slow_motion(int(args[0]) if args else 6, client)
     elif word == "kwheel" and args and args[0] in ("up", "down"):
         count = int(args[1]) if len(args) > 1 else 5
         gap = float(args[2]) if len(args) > 2 else 1.0
