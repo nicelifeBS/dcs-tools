@@ -43,6 +43,21 @@
 --   nothing to the view; digital and export switch views. Next/previous object (181/180) do
 --   nothing by any route (round 5).
 --
+-- Round 7 (spike-7): can the app match the free camera's speed to an aircraft, helicopter or
+-- missile? Three questions: what speed does each object have (also while paused), what
+-- speed does the camera have, and which input command changes the camera's speed.
+--   CAMV                     camera speed in m/s (CAMV speed=, fwd= signed along the camera's
+--                            forward axis, age=): the change of LoGetCameraPosition().p over
+--                            real time, so it works while the sim is paused. STATE has
+--                            camv= and camfwd= too, and LOCMD-AFTER reports them
+--   TRACK on|off             sample the aircraft, helicopters and weapons ~5 times a second
+--                            (only while model time advances) and keep each one's velocity
+--   MOVERS [radius m]        every tracked object, nearest to the camera first, with speed,
+--                            unit, group and (weapons) the aircraft that probably fired it.
+--                            Paused, it shows the last speed measured while the sim ran
+--   FINDCAM [subdir]         scan Config (or subdir) for the free-camera / camera-speed
+--                            bindings; then GLOBALS <name part> for the numeric ids
+--
 -- A unit counts as viewed only when it is within VIEW_MAX_OFF degrees of the camera's forward
 -- axis and the camera is not inside another unit (its cockpit).
 --
@@ -55,7 +70,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "spike-6"
+local VERSION = "spike-7"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> client
@@ -77,6 +92,16 @@ local VIEW_MAX_DIST   = 5000   -- metres: a unit further from the camera is not 
 local VIEW_MAX_OFF    = 5      -- degrees: F2 points at its unit (0.0 paused, up to 1.6 flying)
 local INSIDE_DIST     = 10     -- metres: a camera this close to a unit is in its cockpit
 local MAX_OBJECT_LINES = 100
+
+-- Round 7
+local CAMV_WINDOW      = 0.25  -- real seconds per camera speed sample
+local TRACK_INTERVAL   = 0.2   -- real seconds between object samples
+local TRACK_MIN_DT     = 0.02  -- model seconds: less than this is a pause, not motion
+local TRACK_MAX_SPEED  = 3000  -- m/s: faster between two samples is a respawn, not a speed
+local SHOOTER_MAX_DIST = 2000  -- metres: a weapon first seen this close to an aircraft of its side
+local MAX_MOVER_LINES  = 100
+local MAX_CAMCMD_HITS  = 120
+local MS_TO_KT         = 1.943844
 
 -- -------------------------------------------------------------------------------------
 -- helpers
@@ -370,17 +395,51 @@ local function is_speed_name(s)
     return s:find("accel", 1, true) ~= nil or s:find("decel", 1, true) ~= nil
 end
 
+-- Visit every .lua file under the dirs (below the install root) as visit(path, short_path);
+-- visit returns true to stop the whole scan. Returns the number of files visited, or nil and a
+-- reason.
+local function walk_lua(dirs, visit)
+    if type(lfs) ~= "table" or type(lfs.dir) ~= "function" then return nil, "no lfs" end
+    local root = install_root()
+    local files, stopped = 0, false
+
+    local function walk(dir, short, depth)
+        if depth > MAX_DEPTH or files >= MAX_FILES or stopped then return end
+        local ok, iter, obj = pcall(lfs.dir, dir)
+        if not ok then return end
+        for entry in iter, obj do
+            if files >= MAX_FILES or stopped then break end
+            if entry ~= "." and entry ~= ".." then
+                local path = dir .. "\\" .. entry
+                local mode = call(lfs.attributes, path, "mode")
+                if mode == "directory" then
+                    walk(path, short .. "\\" .. entry, depth + 1)
+                elseif mode == "file" and entry:lower():match("%.lua$") then
+                    files = files + 1
+                    local okv, done = pcall(visit, path, short .. "\\" .. entry)
+                    if okv and done then stopped = true end
+                end
+            end
+        end
+    end
+
+    for _, d in ipairs(dirs) do
+        local ok, err = pcall(walk, root .. d, d, 1)
+        if not ok then report("FIND error in " .. d .. ": " .. oneline(err)) end
+    end
+    return files, root
+end
+
 local function find_commands(subdir)
     if type(lfs) ~= "table" or type(lfs.dir) ~= "function" then
         report("FIND unavailable: no lfs")
         return
     end
-    local root = install_root()
     local dirs = { "Scripts", "Config" }
     if subdir and #subdir > 0 then dirs = { subdir } end
 
     local started = call(dcs_fn("getRealTime")) or 0
-    local files, hits, seen = 0, 0, {}
+    local hits, seen = 0, {}
 
     local function scan_file(path, short)
         local fh = io.open(path, "r")
@@ -404,32 +463,56 @@ local function find_commands(subdir)
         fh:close()
     end
 
-    local function walk(dir, short, depth)
-        if depth > MAX_DEPTH or files >= MAX_FILES or hits >= MAX_HITS then return end
-        local ok, iter, obj = pcall(lfs.dir, dir)
-        if not ok then return end
-        for entry in iter, obj do
-            if files >= MAX_FILES or hits >= MAX_HITS then break end
-            if entry ~= "." and entry ~= ".." then
-                local path = dir .. "\\" .. entry
-                local mode = call(lfs.attributes, path, "mode")
-                if mode == "directory" then
-                    walk(path, short .. "\\" .. entry, depth + 1)
-                elseif mode == "file" and entry:lower():match("%.lua$") then
-                    files = files + 1
-                    pcall(scan_file, path, short .. "\\" .. entry)
-                end
-            end
-        end
-    end
-
-    for _, d in ipairs(dirs) do
-        local ok, err = pcall(walk, root .. d, d, 1)
-        if not ok then report("FIND error in " .. d .. ": " .. oneline(err)) end
-    end
+    local files, root = walk_lua(dirs, function(path, short)
+        scan_file(path, short)
+        return hits >= MAX_HITS
+    end)
     local elapsed = (call(dcs_fn("getRealTime")) or started) - started
     report(string.format("FIND done: %d lua files, %d hits, %.1fs, root=%s dirs=%s",
         files, hits, elapsed, root, table.concat(dirs, ",")))
+end
+
+-- Round 7: the bindings behind the free camera (F11) and its speed. The binding lines carry
+-- the command name and the label shown in Options > Controls, e.g.
+--   {combos = {{key = 'Num*', reformers = {'LAlt'}}}, down = iCommandView..., name = _('Camera forward')}
+-- so list every line that mentions the camera together with speed or movement, and any line
+-- about speed in a view config file (View.lua has the camera's speed and acceleration).
+local function camera_line(l, short)
+    if l:find("camera", 1, true)
+        and (l:find("speed", 1, true) or l:find("forward", 1, true) or l:find("backward", 1, true)
+            or l:find("move", 1, true) or l:find("accel", 1, true)) then
+        return true
+    end
+    return short:lower():find("view", 1, true) ~= nil and l:find("speed", 1, true) ~= nil
+end
+
+local function find_camera(subdir)
+    if type(lfs) ~= "table" or type(lfs.dir) ~= "function" then
+        report("FINDCAM unavailable: no lfs")
+        return
+    end
+    local dirs = { "Config" }
+    if subdir and #subdir > 0 then dirs = { subdir } end
+    local hits = 0
+
+    local files, root = walk_lua(dirs, function(path, short)
+        local fh = io.open(path, "r")
+        if not fh then return false end
+        local n = 0
+        for line in fh:lines() do
+            n = n + 1
+            if camera_line(line:lower(), short) then
+                hits = hits + 1
+                local text = line:gsub("^%s+", ""):gsub("%s+$", "")
+                report(string.format("CAMCMD %s:%d %s", short, n, oneline(text:sub(1, 240))))
+                if hits >= MAX_CAMCMD_HITS then break end
+            end
+        end
+        fh:close()
+        return hits >= MAX_CAMCMD_HITS
+    end)
+    report(string.format("FINDCAM done: %d lua files, %d hits, root=%s dirs=%s",
+        files, hits, root, table.concat(dirs, ",")))
 end
 
 -- -------------------------------------------------------------------------------------
@@ -525,8 +608,9 @@ local y, z = c.y or c.x, c.z or c.x
 return string.format("%.3f %.3f %.3f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f",
     c.p.x, c.p.y, c.p.z, c.x.x, c.x.y, c.x.z, y.x, y.y, y.z, z.x, z.y, z.z)
 ]]
+-- ARG is replaced by the LoGetWorldObjects argument: nothing, or 'ballistic' for weapons.
 local UNITS_IN_EXPORT = [[
-local objs = type(LoGetWorldObjects) == "function" and LoGetWorldObjects()
+local objs = type(LoGetWorldObjects) == "function" and LoGetWorldObjects(ARG)
 if type(objs) ~= "table" then return "" end
 local function clean(v) return (tostring(v or ""):gsub("[\t\r\n]", " ")) end
 local out = {}
@@ -534,7 +618,8 @@ for id, o in pairs(objs) do
     local p, t = o.Position or {}, o.Type or {}
     out[#out + 1] = table.concat({ tostring(id), tostring(t.level1 or 0),
         tostring(o.Flags and o.Flags.Human or false), tostring(p.x or ""), tostring(p.y or ""),
-        tostring(p.z or ""), clean(o.Name), clean(o.Coalition), clean(o.UnitName), clean(o.GroupName) }, "\t")
+        tostring(p.z or ""), clean(o.Name), clean(o.Coalition), clean(o.UnitName), clean(o.GroupName),
+        tostring(t.level2 or 0), tostring(t.level3 or 0), tostring(t.level4 or 0) }, "\t")
 end
 return table.concat(out, "\n")
 ]]
@@ -565,10 +650,14 @@ end
 
 local function by_id(a, b) return a.id < b.id end
 
--- Units as a list of plain records; nil if no state can see LoGetWorldObjects.
-local function units()
+-- Units as a list of plain records; nil if no state can see LoGetWorldObjects. kind is nil
+-- for the units, or "ballistic" for weapons in flight (round 7: whether DCS lists missiles
+-- there is one of the things the spike finds out).
+local function units(kind)
     local list = {}
-    local objs = call((resolve_lo("LoGetWorldObjects")))
+    local weapon = kind == "ballistic"
+    local f = resolve_lo("LoGetWorldObjects")
+    local objs = f and call(f, kind)
     if type(objs) == "table" then
         for id, o in pairs(objs) do
             if type(o) == "table" and tonumber(id) then
@@ -577,7 +666,8 @@ local function units()
                     id = tonumber(id), name = o.Name, unit = o.UnitName, group = o.GroupName,
                     coalition = o.Coalition, air = t.level1 == 1,
                     human = type(o.Flags) == "table" and o.Flags.Human or false,
-                    pos = vec(o.Position),
+                    pos = vec(o.Position), weapon = weapon,
+                    l1 = t.level1, l2 = t.level2, l3 = t.level3, l4 = t.level4,
                 }
             end
         end
@@ -585,7 +675,8 @@ local function units()
         table.sort(list, by_id)
         return list
     end
-    local text = dostring_in("export", UNITS_IN_EXPORT)
+    local code = UNITS_IN_EXPORT:gsub("ARG", function() return weapon and "'ballistic'" or "" end)
+    local text = dostring_in("export", code)
     if type(text) ~= "string" or text == "" then return nil end
     for line in text:gmatch("[^\n]+") do
         local f = {}
@@ -594,7 +685,8 @@ local function units()
             list[#list + 1] = {
                 id = tonumber(f[1]), air = tonumber(f[2]) == 1, human = f[3] == "true",
                 pos = vec({ x = f[4], y = f[5], z = f[6] }),
-                name = f[7], coalition = f[8], unit = f[9], group = f[10],
+                name = f[7], coalition = f[8], unit = f[9], group = f[10], weapon = weapon,
+                l1 = tonumber(f[2]), l2 = tonumber(f[11]), l3 = tonumber(f[12]), l4 = tonumber(f[13]),
             }
         end
     end
@@ -679,6 +771,145 @@ local function report_cam(prefix)
         report(string.format("%s axes to nearest: x=%.1f y=%.1f z=%.1f deg", prefix,
             angle_deg(nearest.d, cam.x), angle_deg(nearest.d, cam.y), angle_deg(nearest.d, cam.z)))
     end
+end
+
+-- -------------------------------------------------------------------------------------
+-- camera speed (round 7)
+-- -------------------------------------------------------------------------------------
+-- The camera's own speed in the world: how far LoGetCameraPosition().p moved per real second.
+-- Real time, not model time, because the free camera keeps flying while the sim is paused.
+-- A view change (F-keys) jumps the camera and shows up as one huge sample.
+local camv = { p = nil, r = nil, speed = nil, fwd = nil, at = nil }
+
+local function camv_reset()
+    camv.p, camv.r, camv.speed, camv.fwd, camv.at = nil, nil, nil, nil, nil
+end
+
+local function camv_tick(r)
+    if camv.r and r - camv.r < CAMV_WINDOW then return end
+    local cam = camera()
+    if not (cam and cam.p) then
+        camv_reset()
+        return
+    end
+    if camv.p and camv.r then
+        local dt = r - camv.r
+        local d = vsub(cam.p, camv.p)
+        local v = { x = d.x / dt, y = d.y / dt, z = d.z / dt }
+        camv.speed = vlen(v)
+        local axis = vlen(cam.x)
+        camv.fwd = axis > 0 and vdot(v, cam.x) / axis or nil
+        camv.at = r
+    end
+    camv.p, camv.r = cam.p, r
+end
+
+local function opt(v, fmt)
+    if v == nil then return "-" end
+    return string.format(fmt or "%.2f", v)
+end
+
+-- -------------------------------------------------------------------------------------
+-- object speeds (round 7)
+-- -------------------------------------------------------------------------------------
+-- LoGetWorldObjects reports position and heading but no velocity, so a speed is the change in
+-- position over model time between two samples. It stays valid while the sim is paused (the
+-- last measured velocity is kept, and its age says how old it is).
+local track = { on = false, next_rt = 0, last_m = nil, mov = {}, samples = 0 }
+
+-- plane, heli, "air" for other air objects, weapon (from the ballistic list), else nil.
+local function kind_of(u)
+    if u.weapon then return "weapon" end
+    if u.l1 == 1 then
+        if u.l2 == 1 then return "plane" end
+        if u.l2 == 2 then return "heli" end
+        return "air"
+    end
+    return nil
+end
+
+local function track_reset()
+    track.last_m, track.mov, track.samples, track.next_rt = nil, {}, 0, 0
+end
+
+-- The aircraft of the weapon's side nearest to where it first appears, as the Tacview events
+-- do; "-" when none is close.
+local function guess_shooter(w, carriers)
+    local best, best_dist
+    for _, c in ipairs(carriers) do
+        if c.pos and w.pos and (w.coalition == nil or c.coalition == w.coalition) then
+            local dist = vlen(vsub(c.pos, w.pos))
+            if dist <= SHOOTER_MAX_DIST and (not best_dist or dist < best_dist) then
+                best, best_dist = c, dist
+            end
+        end
+    end
+    if not best then return "-" end
+    return string.format("%s/%s", tostring(best.unit), tostring(best.group))
+end
+
+local function track_tick(m, r)
+    if not track.on or r < track.next_rt then return end
+    track.next_rt = r + TRACK_INTERVAL
+    if track.last_m and m < track.last_m - 1 then track_reset() end  -- the track restarted
+    -- Paused (or a frame that did not advance the sim): nothing moved, keep what we have.
+    if track.last_m and m - track.last_m < TRACK_MIN_DT then return end
+
+    local list = units()
+    if not list then return end
+    local weapons = units("ballistic") or {}
+    for _, w in ipairs(weapons) do list[#list + 1] = w end
+
+    local carriers, now = {}, {}
+    for _, u in ipairs(list) do
+        local kind = kind_of(u)
+        if kind == "plane" or kind == "heli" or kind == "air" then carriers[#carriers + 1] = u end
+        if kind and u.pos then
+            local prev = track.mov[u.id]
+            local e = { u = u, kind = kind, pos = u.pos, m = m }
+            if prev then
+                e.from = prev.from
+                e.v, e.speed, e.vm = prev.v, prev.speed, prev.vm
+                local dt = m - prev.m
+                if dt >= TRACK_MIN_DT then
+                    local d = vsub(u.pos, prev.pos)
+                    local v = { x = d.x / dt, y = d.y / dt, z = d.z / dt }
+                    local speed = vlen(v)
+                    if speed <= TRACK_MAX_SPEED then
+                        e.v, e.speed, e.vm = v, speed, m
+                    else
+                        e.v, e.speed, e.vm = nil, nil, nil  -- a jump, not a speed
+                    end
+                else
+                    e.pos, e.m = prev.pos, prev.m
+                end
+            end
+            now[u.id] = e
+        end
+    end
+    -- Weapons seen for the first time: who fired them.
+    for id, e in pairs(now) do
+        if e.kind == "weapon" and not track.mov[id] then e.from = guess_shooter(e.u, carriers) end
+    end
+    track.mov, track.last_m = now, m
+    track.samples = track.samples + 1
+end
+
+local function type_levels(u)
+    return string.format("%s/%s/%s/%s", tostring(u.l1), tostring(u.l2), tostring(u.l3), tostring(u.l4))
+end
+
+local function mover_line(e, now_m)
+    local u = e.u
+    local speed = e.speed and string.format("%.1f m/s %.0f kt %.0f km/h", e.speed,
+        e.speed * MS_TO_KT, e.speed * 3.6) or "unknown"
+    local v = e.v and string.format("(%.1f,%.1f,%.1f)", e.v.x, e.v.y, e.v.z) or "-"
+    local line = string.format("MOV id=%d/0x%x kind=%s type=%s name=%s unit=%q group=%q %s human=%s speed=%s v=%s age=%s",
+        u.id, u.id, e.kind, type_levels(u), tostring(u.name), tostring(u.unit), tostring(u.group),
+        tostring(u.coalition), tostring(u.human), speed, v, e.vm and string.format("%.1fs", now_m - e.vm) or "-")
+    if e.dist then line = line .. string.format(" dist=%.0f", e.dist) end
+    if e.kind == "weapon" then line = line .. " from=" .. tostring(e.from or "-") end
+    return oneline(line)
 end
 
 local ROUTES = { digital = true, export = true, hooks = true }
@@ -894,6 +1125,80 @@ handlers.DIGITAL = function(arg)
     after.label = string.format("digital id=%d", id)
 end
 
+handlers.CAMV = function()
+    local r = call(dcs_fn("getRealTime")) or 0
+    if camv.speed == nil then
+        report("CAMV unknown: no camera position yet (LoGetCameraPosition), or no sample yet")
+        return
+    end
+    report(string.format("CAMV speed=%.2f m/s fwd=%s m/s age=%.2fs paused=%s via=%s",
+        camv.speed, opt(camv.fwd), r - (camv.at or r), tostring(call(dcs_fn("getPause"))),
+        tostring(view_source.camera)))
+end
+
+handlers.TRACK = function(arg)
+    local word = tostring(arg or ""):lower():match("^%s*(%a*)%s*$") or ""
+    if word == "on" then
+        track.on = true
+        track.next_rt = 0
+        report("TRACK on")
+    elseif word == "off" then
+        track.on = false
+        track_reset()
+        report("TRACK off")
+    elseif word == "" then
+        report(string.format("TRACK %s samples=%d tracked=%d", track.on and "on" or "off",
+            track.samples, (function() local n = 0 for _ in pairs(track.mov) do n = n + 1 end return n end)()))
+    else
+        send("ERR TRACK needs on or off")
+    end
+end
+
+handlers.MOVERS = function(arg)
+    if not track.on then
+        report("MOVERS tracking is off: TRACK on, let the replay run for a few seconds, then MOVERS")
+        return
+    end
+    local radius = tonumber(tostring(arg or ""):match("^%s*(%d+%.?%d*)%s*$"))
+    local now_m = model_time() or track.last_m or 0
+    local cam = camera()
+    local list, counts, types = {}, { plane = 0, heli = 0, air = 0, weapon = 0 }, {}
+    for _, e in pairs(track.mov) do
+        if cam and cam.p then e.dist = vlen(vsub(e.pos, cam.p)) else e.dist = nil end
+        if not radius or not e.dist or e.dist <= radius then
+            list[#list + 1] = e
+            counts[e.kind] = counts[e.kind] + 1
+            if e.kind == "weapon" then
+                local key = type_levels(e.u)
+                types[key] = (types[key] or 0) + 1
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.dist and b.dist and a.dist ~= b.dist then return a.dist < b.dist end
+        return a.u.id < b.u.id
+    end)
+    local tlist = {}
+    for key, n in pairs(types) do tlist[#tlist + 1] = key .. "=" .. n end
+    table.sort(tlist)
+    report(string.format("MOVERS listed=%d plane=%d heli=%d air=%d weapon=%d paused=%s samples=%d "
+        .. "weapon_types=%s radius=%s", #list, counts.plane, counts.heli, counts.air, counts.weapon,
+        tostring(call(dcs_fn("getPause"))), track.samples, #tlist > 0 and table.concat(tlist, ",") or "-",
+        radius and tostring(radius) or "-"))
+    for i, e in ipairs(list) do
+        if i > MAX_MOVER_LINES then
+            report(string.format("MOVERS ... %d more", #list - MAX_MOVER_LINES))
+            break
+        end
+        report(mover_line(e, now_m))
+    end
+    report("MOVERS end")
+end
+
+handlers.FINDCAM = function(arg)
+    find_camera(arg)
+end
+
 handlers.GLOBALS = function(arg)
     find_globals(arg)
 end
@@ -1026,6 +1331,8 @@ local function on_frame()
     local r = call(dcs_fn("getRealTime"))
     if type(r) ~= "number" then return end
     measure(m, r)
+    camv_tick(r)
+    track_tick(m, r)
 
     if view_after.at_rt and r >= view_after.at_rt then
         local label = view_after.label
@@ -1037,19 +1344,20 @@ local function on_frame()
     if after.at_rt and r >= after.at_rt then
         -- The measured speed needs a full sample window at the new rate to settle, so raw is
         -- the quicker signal here; accel is what DCS says it is commanding.
-        report(string.format("LOCMD-AFTER %s accel=%.3f speed=%.3f raw=%.3f paused=%s",
+        report(string.format("LOCMD-AFTER %s accel=%.3f speed=%.3f raw=%.3f paused=%s camv=%s camfwd=%s",
             after.label, commanded_accel(), sim.speed or -1, sim.raw or -1,
-            tostring(call(dcs_fn("getPause")))))
+            tostring(call(dcs_fn("getPause"))), opt(camv.speed), opt(camv.fwd)))
         after.at_rt, after.label = nil, nil
     end
 
     if r >= sim.next_state_rt then
         sim.next_state_rt = r + STATE_INTERVAL
         send(string.format(
-            "STATE t=%.3f rt=%.3f speed=%.3f raw=%.3f accel=%.3f paused=%s track=%s stop=%.3f start_tod=%s date=%s",
+            "STATE t=%.3f rt=%.3f speed=%.3f raw=%.3f accel=%.3f paused=%s track=%s stop=%.3f start_tod=%s date=%s camv=%s camfwd=%s",
             m, r, sim.speed or -1, sim.raw or -1, commanded_accel(),
             tostring(call(dcs_fn("getPause"))), tostring(call(dcs_fn("isTrackPlaying"))),
-            stop.target or -1, tostring(sim.start_tod), tostring(sim.date)))
+            stop.target or -1, tostring(sim.start_tod), tostring(sim.date),
+            opt(camv.speed), opt(camv.fwd)))
     end
 end
 
@@ -1062,6 +1370,8 @@ local callbacks = {}
 function callbacks.onMissionLoadEnd()
     sim.in_mission = true
     reset_sim()
+    camv_reset()
+    track_reset()
     pcall(read_mission_info)
     sayf("mission loaded: start_time=%s date=%s theatre=%s track=%s",
         tostring(sim.start_tod), tostring(sim.date), tostring(sim.theatre),

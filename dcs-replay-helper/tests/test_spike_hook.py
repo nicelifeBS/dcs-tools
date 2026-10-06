@@ -21,7 +21,7 @@ def hook() -> Hook:
 
 
 def test_loads_and_registers_callbacks(hook: Hook) -> None:
-    assert any("loaded spike-6 (callbacks registered)" in line for line in hook.logs())
+    assert any("loaded spike-7 (callbacks registered)" in line for line in hook.logs())
 
 
 def test_silent_outside_a_mission(hook: Hook) -> None:
@@ -31,7 +31,7 @@ def test_silent_outside_a_mission(hook: Hook) -> None:
 
 def test_state_after_mission_load(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.sent()[0] == "HELLO spike-6"
+    assert hook.sent()[0] == "HELLO spike-7"
     hook.run(0.5)
     state = hook.last_state()
     assert state["start_tod"] == "59400"
@@ -42,7 +42,7 @@ def test_state_after_mission_load(hook: Hook) -> None:
 
 def test_ping(hook: Hook) -> None:
     hook.load_mission()
-    assert hook.cmd("PING") == ["PONG spike-6"]
+    assert hook.cmd("PING") == ["PONG spike-7"]
 
 
 def test_pause_resume(hook: Hook) -> None:
@@ -94,7 +94,7 @@ def test_disarm(hook: Hook) -> None:
 def test_probe_survives_minimal_environment(hook: Hook) -> None:
     hook.load_mission()
     replies = hook.cmd("PROBE")
-    assert replies[0] == "PROBE begin spike-6"
+    assert replies[0] == "PROBE begin spike-7"
     assert replies[-1] == "PROBE end"
     assert "PROBE mission start_time=59400 date=2018-02-01 theatre=Caucasus" in replies
     assert "PROBE global LoSetCommand nil" in replies
@@ -146,17 +146,10 @@ def test_unknown_command(hook: Hook) -> None:
     assert hook.cmd("BOGUS")[0] == "ERR unknown command BOGUS"
 
 
-def test_findcmds_scans_install(hook: Hook, tmp_path: Path) -> None:
-    (tmp_path / "Scripts" / "Input").mkdir(parents=True)
-    (tmp_path / "Scripts" / "Input" / "defs.lua").write_text(
-        "iCommandAccelerate = 52,\niCommandDecelerate = 53,\niCommandPause = 54,\n")
-    (tmp_path / "Config" / "Input").mkdir(parents=True)
-    (tmp_path / "Config" / "Input" / "keyboard.lua").write_text(
-        "{combos = {{key = 'Z', reformers = {'LCtrl'}}}, down = iCommandAccelerate, name = _('Time accelerate')},\n")
-    (tmp_path / "Config" / "readme.txt").write_text("iCommandAccelerate = 99\n")
-
+def fake_install(hook: Hook, root: Path) -> None:
+    """Point the hook's lfs and io.open at a directory standing in for the DCS install."""
     lua = hook.lua
-    lua.globals().PY_ROOT = str(tmp_path)
+    lua.globals().PY_ROOT = str(root)
     lua.globals().PY_listdir = lambda p: lua.table_from([".", ".."] + sorted(os.listdir(p)))
     lua.globals().PY_mode = lambda p: (
         "directory" if os.path.isdir(p) else "file" if os.path.isfile(p) else None)
@@ -174,6 +167,18 @@ def test_findcmds_scans_install(hook: Hook, tmp_path: Path) -> None:
         local real_open = io.open
         io.open = function(p, mode) return real_open(fix(p), mode) end
     """)
+
+
+def test_findcmds_scans_install(hook: Hook, tmp_path: Path) -> None:
+    (tmp_path / "Scripts" / "Input").mkdir(parents=True)
+    (tmp_path / "Scripts" / "Input" / "defs.lua").write_text(
+        "iCommandAccelerate = 52,\niCommandDecelerate = 53,\niCommandPause = 54,\n")
+    (tmp_path / "Config" / "Input").mkdir(parents=True)
+    (tmp_path / "Config" / "Input" / "keyboard.lua").write_text(
+        "{combos = {{key = 'Z', reformers = {'LCtrl'}}}, down = iCommandAccelerate, name = _('Time accelerate')},\n")
+    (tmp_path / "Config" / "readme.txt").write_text("iCommandAccelerate = 99\n")
+
+    fake_install(hook, tmp_path)
     hook.load_mission()
     replies = hook.cmd("FINDCMDS")
     assert "CMDID iCommandAccelerate=52 file=Scripts\\Input\\defs.lua" in replies
@@ -484,3 +489,267 @@ def test_camera_and_units_through_the_export_state(hook: Hook) -> None:
     lines = hook.cmd("FOCUS A-10C #001") + focus_lines(hook)
     assert lines[3].startswith('FOCUS-STEP 2 digital viewed id=16797696/0x1005000 A-10C_2 unit="A-10C #001"')
     assert lines[-1].startswith("FOCUS-DONE ok target=0x1005000")
+
+
+# Round 7: speeds. Everything moves along +x as a function of the mock clocks: objects with
+# model time (MOCK.m, so they stop when the sim is paused), the camera with real time (MOCK.r,
+# so it flies on while paused, as the free camera does). The weapon appears at model time 5,
+# 20 m from the F-16 that "fired" it; DCS lists it only under 'ballistic'.
+WORLD7 = """
+MOCK.cam0, MOCK.cam_v = { x = 0, y = 100, z = 0 }, { x = 0, y = 0, z = 0 }
+MOCK.args = {}
+local bodies = {
+    [0x1001] = { Name = "F-16C_50", UnitName = "Viper 1-1", GroupName = "Viper", Coalition = "Allies",
+                 Type = { level1 = 1, level2 = 1, level3 = 1, level4 = 2 }, Flags = { Human = true },
+                 p0 = { x = 0, y = 1000, z = 0 }, v = { x = 200, y = 0, z = 0 } },
+    [0x1002] = { Name = "Ka-50", UnitName = "Hokum 1-1", GroupName = "Hokum", Coalition = "Enemies",
+                 Type = { level1 = 1, level2 = 2, level3 = 3, level4 = 4 }, Flags = {},
+                 p0 = { x = 5000, y = 200, z = 0 }, v = { x = 50, y = 0, z = 0 } },
+    [0x1003] = { Name = "Ural-375", UnitName = "Truck", GroupName = "Convoy", Coalition = "Enemies",
+                 Type = { level1 = 2 }, Flags = {}, p0 = { x = 10, y = 0, z = 10 }, v = { x = 10, y = 0, z = 0 } },
+}
+local weapons = {
+    [0x2001] = { Name = "AIM-120C", Coalition = "Allies", Type = { level1 = 4, level2 = 4, level3 = 5, level4 = 7 },
+                 p0 = { x = 1000, y = 995, z = 0 }, v = { x = 600, y = 0, z = 0 }, t0 = 5 },
+}
+local function at(b, t)
+    local p, v = b.p0, b.v
+    return { x = p.x + v.x * t, y = p.y + v.y * t, z = p.z + v.z * t }
+end
+Export = {
+    LoGetCameraPosition = function()
+        local p, v, r = MOCK.cam0, MOCK.cam_v, MOCK.r
+        return { p = { x = p.x + v.x * r, y = p.y + v.y * r, z = p.z + v.z * r },
+                 x = { x = 1, y = 0, z = 0 }, y = { x = 0, y = 1, z = 0 }, z = { x = 0, y = 0, z = 1 } }
+    end,
+    LoGetWorldObjects = function(kind)
+        table.insert(MOCK.args, tostring(kind))
+        local out = {}
+        for id, b in pairs(kind == "ballistic" and weapons or bodies) do
+            if not b.t0 or MOCK.m >= b.t0 then
+                out[id] = { Name = b.Name, UnitName = b.UnitName, GroupName = b.GroupName, Coalition = b.Coalition,
+                            Type = b.Type, Flags = b.Flags, Position = at(b, b.t0 and MOCK.m - b.t0 or MOCK.m) }
+            end
+        end
+        return out
+    end,
+}
+"""
+
+
+@pytest.fixture
+def speeds(hook: Hook) -> Hook:
+    hook.lua.execute(WORLD7)
+    hook.load_mission()
+    return hook
+
+
+def fields(line: str) -> dict[str, str]:
+    """The key=value words of a report line (speed= keeps only its number)."""
+    return dict(w.split("=", 1) for w in line.split() if "=" in w)
+
+
+@pytest.mark.parametrize("cam_vx,fwd", [(100, 100), (-40, -40), (0, 0)])
+def test_camv_is_the_camera_speed_along_its_forward_axis(speeds: Hook, cam_vx: float, fwd: float) -> None:
+    speeds.lua.execute(f"MOCK.cam_v.x = {cam_vx}")
+    speeds.run(1.0)
+    reply = fields(speeds.cmd("CAMV")[0])
+    assert float(reply["speed"]) == pytest.approx(abs(cam_vx), abs=0.01)
+    assert float(reply["fwd"]) == pytest.approx(fwd, abs=0.01)
+    speeds.run(0.5)
+    state = speeds.last_state()
+    assert float(state["camv"]) == pytest.approx(abs(cam_vx), abs=0.01)
+    assert float(state["camfwd"]) == pytest.approx(fwd, abs=0.01)
+
+
+def test_camv_keeps_measuring_while_the_sim_is_paused(speeds: Hook) -> None:
+    speeds.lua.execute("MOCK.cam_v.x = 25")
+    speeds.cmd("PAUSE")
+    speeds.run(1.0)
+    assert speeds.mock.paused is True
+    assert float(fields(speeds.cmd("CAMV")[0])["speed"]) == pytest.approx(25, abs=0.01)
+    assert fields(speeds.cmd("CAMV")[0])["paused"] == "true"
+
+
+def test_camv_unknown_without_a_camera(hook: Hook) -> None:
+    hook.load_mission()
+    hook.run(1.0)
+    assert hook.cmd("CAMV")[0].startswith("CAMV unknown")
+    hook.run(0.5)
+    assert hook.last_state()["camv"] == "-"
+
+
+def test_locmd_after_reports_the_camera_speed(speeds: Hook) -> None:
+    speeds.lua.execute("MOCK.cam_v.x = 10; DCS.dispatchDigitalAction = function() end")
+    speeds.run(1.0)
+    speeds.cmd("DIGITAL 1234")
+    speeds.clear()
+    speeds.run(1.0)
+    after = [s for s in speeds.sent() if s.startswith("LOCMD-AFTER")]
+    assert "camv=10.00 camfwd=10.00" in after[0]
+
+
+def mover_lines(replies: list[str]) -> dict[str, dict[str, str]]:
+    """MOV lines by unit name or weapon name."""
+    out = {}
+    for line in replies:
+        if line.startswith("MOV "):
+            unit = line.split('unit="', 1)[1].split('"', 1)[0]
+            name = fields(line)["name"]
+            out[name if unit in ("nil", "") else unit] = fields(line) | {"line": line}  # weapons have no unit
+    return out
+
+
+def test_track_measures_aircraft_helicopter_and_missile_speeds(speeds: Hook) -> None:
+    assert speeds.cmd("TRACK on") == ["TRACK on"]
+    speeds.run(8.0)
+    replies = speeds.cmd("MOVERS")
+    head = replies[0]
+    assert head.startswith("MOVERS listed=3 plane=1 heli=1 air=0 weapon=1 paused=false")
+    assert "weapon_types=4/4/5/7=1" in head
+    movers = mover_lines(replies)
+    assert set(movers) == {"Viper 1-1", "Hokum 1-1", "AIM-120C"}  # the truck is neither
+    assert movers["Viper 1-1"]["kind"] == "plane"
+    assert movers["Hokum 1-1"]["kind"] == "heli"
+    assert movers["AIM-120C"]["kind"] == "weapon"
+    assert "speed=200.0 m/s 389 kt 720 km/h" in movers["Viper 1-1"]["line"]
+    assert "speed=50.0 m/s" in movers["Hokum 1-1"]["line"]
+    assert "speed=600.0 m/s" in movers["AIM-120C"]["line"]
+    assert 'group="Viper"' in movers["Viper 1-1"]["line"]
+    assert movers["Viper 1-1"]["human"] == "true"
+    assert movers["AIM-120C"]["type"] == "4/4/5/7"
+    assert replies[-1] == "MOVERS end"
+    assert "ballistic" in list(speeds.mock.args.values())
+
+
+def test_a_weapon_is_attributed_to_the_nearest_aircraft_of_its_side(speeds: Hook) -> None:
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    movers = mover_lines(speeds.cmd("MOVERS"))
+    assert movers["AIM-120C"]["line"].endswith("from=Viper 1-1/Viper")
+    # Still the same later, when the shooter is far away.
+    speeds.run(20.0)
+    movers = mover_lines(speeds.cmd("MOVERS"))
+    assert movers["AIM-120C"]["line"].endswith("from=Viper 1-1/Viper")
+
+
+def test_a_weapon_with_no_aircraft_near_has_no_origin(speeds: Hook) -> None:
+    speeds.lua.execute("MOCK.cam0.x = 0")
+    speeds.lua.execute(r"""
+        local f = Export.LoGetWorldObjects
+        Export.LoGetWorldObjects = function(kind)
+            local out = f(kind)
+            if kind ~= "ballistic" then out[0x1001].Coalition = "Enemies" end  -- not the missile's side
+            return out
+        end
+    """)
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    assert mover_lines(speeds.cmd("MOVERS"))["AIM-120C"]["line"].endswith("from=-")
+
+
+def test_movers_while_paused_keep_the_last_speed_and_say_how_old_it_is(speeds: Hook) -> None:
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    speeds.cmd("PAUSE")
+    speeds.run(3.0)
+    replies = speeds.cmd("MOVERS")
+    assert "paused=true" in replies[0]
+    viper = mover_lines(replies)["Viper 1-1"]
+    assert "speed=200.0 m/s" in viper["line"]
+    assert float(viper["age"].rstrip("s")) == pytest.approx(0.2, abs=0.25)  # the last sample before the pause
+
+
+def test_movers_sorted_by_distance_to_the_camera_and_limited_by_radius(speeds: Hook) -> None:
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    replies = speeds.cmd("MOVERS")
+    dists = [float(fields(r)["dist"]) for r in replies if r.startswith("MOV ")]
+    assert dists == sorted(dists) and len(dists) == 3
+    replies = speeds.cmd("MOVERS 3000")
+    assert replies[0].startswith("MOVERS listed=2 ")
+    assert "radius=3000" in replies[0]
+
+
+def test_movers_need_tracking(speeds: Hook) -> None:
+    assert speeds.cmd("MOVERS")[0].startswith("MOVERS tracking is off")
+    speeds.cmd("TRACK on")
+    speeds.cmd("TRACK off")
+    assert speeds.cmd("TRACK")[0].startswith("TRACK off samples=0")
+    assert speeds.cmd("TRACK maybe") == ["ERR TRACK needs on or off"]
+
+
+def test_a_jump_is_not_a_speed(speeds: Hook) -> None:
+    speeds.cmd("TRACK on")
+    speeds.run(2.0)
+    speeds.lua.execute("MOCK.m = MOCK.m + 100")  # position moves 20 km between two samples
+    speeds.run(0.5)
+    movers = mover_lines(speeds.cmd("MOVERS"))
+    assert "speed=200.0 m/s" in movers["Viper 1-1"]["line"]  # then 200 m/s again after the jump
+    speeds.cmd("TRACK off")
+    speeds.cmd("TRACK on")
+    speeds.run(0.1)
+    speeds.lua.execute("MOCK.m = MOCK.m + 1000")
+    speeds.run(0.3)
+    line = mover_lines(speeds.cmd("MOVERS"))["Viper 1-1"]["line"]
+    assert "speed=" in line
+
+
+def test_weapons_through_the_export_state(hook: Hook) -> None:
+    # No Export.LoGetWorldObjects in this state: the export state's copy is called as
+    # LoGetWorldObjects('ballistic') and its answer parsed.
+    hook.lua.execute(WORLD7 + r"""
+        local getters = { LoGetCameraPosition = Export.LoGetCameraPosition, LoGetWorldObjects = Export.LoGetWorldObjects }
+        Export.LoGetCameraPosition, Export.LoGetWorldObjects = nil, nil
+        net = { dostring_in = function(state, code)
+            if state ~= "export" then return "", false end
+            local f = assert(loadstring(code))
+            setfenv(f, setmetatable({}, { __index = function(_, k) return getters[k] or _G[k] end }))
+            return f(), true
+        end }
+    """)
+    hook.load_mission()
+    hook.cmd("TRACK on")
+    hook.run(8.0)
+    assert list(hook.mock.args.values()).count("ballistic") > 0
+    movers = mover_lines(hook.cmd("MOVERS"))
+    assert movers["AIM-120C"]["kind"] == "weapon"
+    assert "speed=600.0 m/s" in movers["AIM-120C"]["line"]
+    assert movers["Hokum 1-1"]["kind"] == "heli"
+
+
+def test_tracking_restarts_with_the_track(speeds: Hook) -> None:
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    speeds.lua.execute("MOCK.m = 0")  # the track starts again
+    speeds.run(0.5)
+    replies = speeds.cmd("MOVERS")
+    assert replies[0].startswith("MOVERS listed=2 plane=1 heli=1 air=0 weapon=0")  # the missile is not fired yet
+
+
+def test_findcam_lists_camera_speed_bindings(hook: Hook, tmp_path: Path) -> None:
+    (tmp_path / "Config" / "Input" / "View").mkdir(parents=True)
+    (tmp_path / "Config" / "Input" / "View" / "keyboard.lua").write_text(
+        "  {combos = {{key = 'Num*', reformers = {'LAlt'}}}, down = iCommandViewCamForward, "
+        "name = _('F11 Camera Moving Forward')},\n"
+        "{down = iCommandViewCameraSpeedUp, name = _('Camera speed up')},\n"
+        "{down = iCommandViewAir, name = _('F2 view')},\n"
+        "{down = iCommandPlaneGear, name = _('Gear')},\n")
+    (tmp_path / "Config" / "View").mkdir(parents=True)
+    (tmp_path / "Config" / "View" / "View.lua").write_text("Cameras = {\n  speed = 5.0,\n  fov = 60,\n}\n")
+    (tmp_path / "Config" / "options.lua").write_text("speed = 1\ncamera = 'x'\n")
+    fake_install(hook, tmp_path)
+    hook.load_mission()
+    replies = hook.cmd("FINDCAM")
+    assert ("CAMCMD Config\\Input\\View\\keyboard.lua:1 {combos = {{key = 'Num*', reformers = "
+            "{'LAlt'}}}, down = iCommandViewCamForward, name = _('F11 Camera Moving Forward')},") in replies
+    assert ("CAMCMD Config\\Input\\View\\keyboard.lua:2 {down = iCommandViewCameraSpeedUp, "
+            "name = _('Camera speed up')},") in replies
+    assert "CAMCMD Config\\View\\View.lua:2 speed = 5.0," in replies
+    assert not any("iCommandViewAir" in r or "Gear" in r or "options.lua" in r or "fov" in r for r in replies)
+    assert replies[-1].startswith("FINDCAM done: 3 lua files, 3 hits")
+
+
+def test_findcam_without_lfs(hook: Hook) -> None:
+    hook.load_mission()
+    assert hook.cmd("FINDCAM") == ["FINDCAM unavailable: no lfs"]

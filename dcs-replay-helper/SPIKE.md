@@ -7,7 +7,7 @@ The spike has two parts: a throwaway DCS hook and a console client. Running them
 3. Where is the mission start time, and does DCS model time line up with Tacview time?
 4. How precisely does a hook-side stop land at 4x?
 
-Rounds 1–3 answered those. Round 4 asks a new question: can the hook put DCS's F2 view on a given unit, and tell which unit the camera is on?
+Rounds 1–3 answered those, rounds 4–6 the F2 view question (can the hook put DCS's F2 view on a given unit, and tell which unit the camera is on?). Round 7 asks whether the app can set the free camera's speed to match an aircraft, helicopter or missile.
 
 Nothing is written to the DCS install folder. The hook only logs and answers on localhost UDP ports 47810 and 47811.
 
@@ -15,9 +15,9 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 
 1. Copy `hook/spike/ReplayHelperSpike.lua` to `%USERPROFILE%\Saved Games\DCS\Scripts\Hooks\`. Create the `Hooks` folder if it doesn't exist, and use `DCS.openbeta` instead of `DCS` if that's your Saved Games folder.
 2. Start DCS. `Saved Games\DCS\Logs\dcs.log` should contain:
-   `REPLAYHELPER (Main): loaded spike-6 (callbacks registered)`
+   `REPLAYHELPER (Main): loaded spike-7 (callbacks registered)`
 3. In a terminal, from the `dcs-replay-helper` folder, run `python tools\spike_client.py`. It needs Python 3.10 or newer and no packages. It writes everything to `spike_session.log` in the current folder.
-4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-6`. Typing `s` then shows the live `STATE` line.
+4. In DCS, play the sample track `LastMissionTrack.trk`. Within a second the client should print `HELLO spike-7`. Typing `s` then shows the live `STATE` line.
 
 ## Results (spike finished)
 
@@ -29,6 +29,44 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 - **Pause and resume** from the hook work. The speed is kept through a pause.
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
+
+## Round 7: match the free camera's speed to an object (open)
+
+**Goal:** list the aircraft, helicopters and missiles near the camera with their speeds, pick one, and have the free camera (F11) fly at that speed, while the replay is paused.
+
+**What is known, and what the round has to find out:**
+
+| Question | Status |
+|----------|--------|
+| Can the hook read an object's speed? | **Not directly.** `LoGetWorldObjects` gives position and heading, no velocity. The spike measures it: the change of position over model time between two samples, kept per object. |
+| ...while paused? | Positions don't change while paused, so the spike keeps the last velocity measured while the sim ran (`age=` says how old). The seek's own stop is the usual case: the replay runs at up to 4x into the pause, so the velocities are fresh. The Tacview recording the app already reads would give the exact speed at the paused moment, with no history needed, and is the fallback if this isn't enough. |
+| Are missiles listed? | **Unknown.** `LoGetWorldObjects()` lists units; weapons in flight are believed to be under `LoGetWorldObjects('ballistic')`. `TRACK` asks for both and `MOVERS` prints the `type=level1/level2/level3/level4` of every weapon and a count per type, so missiles can be told from bombs, rockets and shells. |
+| Group and pilot names? | Aircraft and helicopters: `UnitName` and `GroupName`. In a replay the unit name is the pilot name (round 6: they equal Tacview's `Pilot` and `Group`), and `human=true` marks a player. A weapon has a name (`AIM-120C`) but no unit or group, so the spike says who probably fired it: the aircraft of the weapon's side nearest to where it first appears, within 2 km, as the app's Tacview events do. |
+| What changes the free camera's speed? | **Unknown, the main question.** The free camera (F11) has forward and backward movement bindings (community key lists give LAlt+Num\* forward and LAlt+Num/ backward) and speed and acceleration settings in the view config (`View.lua`). I couldn't confirm either from DCS itself: no DCS install here, and the forum pages were unreachable. `FINDCAM` lists the binding lines from your `Config` folder, with the command names. |
+| Can a hook send it? | **Probably**, as for time acceleration and F2: `DCS.dispatchDigitalAction(<id>)` reaches input commands in a replay (rounds 4–6). It needs the numeric id of the command; the keystrokes work without it (Windows). |
+| Can the hook read the camera's speed? | **Yes in principle:** `LoGetCameraPosition().p` moves with the free camera, so the speed is its change over **real** time. `CAMV` and `camv=` in STATE give it, total and along the camera's forward axis (`camfwd=`, signed: negative is backwards). Whether the free camera moves, and the position updates, while the sim is paused is untested. |
+
+If the speed commands are steps (like time acceleration), the app can steer the way `dcs/speed.py` does: press, read `camfwd=`, press again until it is as close to the object's speed as the steps allow. If there is an axis or a setting to write, it can set the value directly.
+
+**Setup:** as in round 4: copy the new `hook/spike/ReplayHelperSpike.lua` into `Saved Games\DCS\Scripts\Hooks`, move `ReplayHelper.lua` out of that folder (both hooks use the same ports) and don't run the app. Afterwards delete the spike hook and reinstall the real one from the app (**Tools → Install / update DCS hook…**). Run `python tools\spike_client.py`, play a track that has missiles in flight if you can (the F-4E vs MiG-29s one), and pause. Numpad keys and F11 are sent to the DCS window like the F-keys before: `key f11`, `key alt+num*`, ...
+
+| # | Do | Look for |
+|---|----|----------|
+| 1 | `findcam` | `CAMCMD <file>:<line> <binding>` lines. Note the command names (`iCommand...`) and keys for the free camera's movement and speed. Everything about the camera's speed or "Camera forward/backward" counts. `findcam Scripts` searches the scripts too |
+| 2 | `globals <part of a name from 1, lower case>`, e.g. `globals viewcam` | `GLOBALS ... iCommand...=<n>`: the id. If none show up (round 3's experience), carry on with keys |
+| 3 | Pause (`p`). Press F11 in DCS (try LCtrl+F11 too if the camera doesn't leave the aircraft), then `camv` | `CAMV speed=0.00 ... via=Export` with the camera standing still. If `CAMV unknown`, the camera isn't readable in this view: say which view you were in |
+| 4 | `kcam alt+num* 5 1.0` | One `CAMV` line after each press. Does the speed step (and by how much), and does it show up while paused (`paused=true`, speed above 0)? |
+| 5 | Stop the camera by hand (the stop key, or the key from 1), then `kcam alt+num/ 5 1.0` | `fwd=` negative: backwards. Compare the step sizes with 4 |
+| 6 | If 1–2 gave an id: `digital <id>`, wait a second, `camv` | `LOCMD-AFTER digital id=... camv=... camfwd=...` changes with no keystroke and no window focus |
+| 7 | `track on`, `r` for 10 s, `p`, `movers` | `MOVERS listed=... plane=... heli=... weapon=... weapon_types=...` then one `MOV` line per object: `kind`, `unit`, `group`, `speed=... m/s ... kt ... km/h`, `dist=` (nearest to the camera first), `age=`. Weapons also `from=`. Compare an aircraft's speed with its cockpit or Tacview speed |
+| 8 | Fire or replay a missile, `movers` while it flies and again after `p` | A `kind=weapon` line with a name like `AIM-120C` and `from=<unit>/<group>`. Check `weapon_types=`: which `level2` is the missile? If `weapon=0` with a missile in the air, say so |
+| 9 | `movers 5000` | Only the objects within 5 km of the camera |
+| 10 | `q` | Upload `spike_session.log` and the `REPLAYHELPER` lines from `dcs.log`. Say what the camera did on screen in 3–6 |
+
+**What the results decide:**
+- **Speeds:** if the measured speeds look right, the app gets an object list (aircraft, helicopters, missiles; kind, name, group, pilot, speed in kt, km/h and m/s, distance) fed by the hook, and a *Match camera speed* button.
+- **Camera:** steps, an axis or a setting decides how the controller works and how close it can get; no working route (no id, keys only on Windows) means keystrokes, with the focus problems that brings.
+- **Missiles:** if `ballistic` lists nothing, the missile speeds come from the Tacview recording instead.
 
 ## Round 6: focus by stepping F2 (done)
 

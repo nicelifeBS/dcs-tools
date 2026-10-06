@@ -111,7 +111,7 @@ src/replay_helper/
 replay_helper.spec                 # PyInstaller build of DCSReplayHelper.exe
 hook/spike/ReplayHelperSpike.lua   # milestone 0 probe hook, kept for reference (see SPIKE.md)
 tools/fake_dcs.py                  # DCS + hook simulator for development
-tools/spike_client.py              # console client for the spike hook
+tools/spike_client.py              # console client for the spike hook (round 7: camera speed, object speeds)
 tests/                             # pytest; lua_harness.py mocks the DCS hooks environment
 tests/data/                        # real DCS tracks and their Tacview recordings: an A-10C with two
                                    # bookmarks (Caucasus), an F-4E against MiG-29s (GermanyCW)

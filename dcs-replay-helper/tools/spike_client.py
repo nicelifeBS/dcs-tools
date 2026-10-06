@@ -48,7 +48,19 @@ commands (case-insensitive):
                          or 0x hex, as in `objects`) or part of its unit/group name. fast: a step
                          every 0.05 s instead of 0.15 s. `focus` alone cancels
   key f1|f2|ctrl+f2|... [count] [delay]
-                         Windows only: press a view key in DCS, then show `cam`
+                         Windows only: press a view key in DCS, then show `cam` and `camv`.
+                         Also the numpad (num*, num/, num-, numplus, num0..num9, num., numenter)
+                         with ctrl/alt/shift in front, e.g. alt+num*
+  camv                   the camera's speed in m/s (round 7): total and along its forward axis.
+                         Works while paused, so it also measures the free camera
+  kcam <key> [count] [gap]
+                         Windows only: press the key `count` times (default 5), `gap` seconds
+                         apart (default 1.0), and show `camv` after each press: the camera's
+                         speed steps, forwards or backwards
+  track on|off           sample aircraft, helicopters and weapons for their speeds (round 7)
+  movers [radius m]      the tracked objects, nearest to the camera first, with speed, unit,
+                         group and (weapons) who probably fired them. Paused: the last speed
+  findcam [subdir]       search Config (or subdir) for the free-camera and camera-speed bindings
   kfocus <id> [key] [max]
                          Windows only: `focus` with keystrokes -- press the key (default f2)
                          until `cam` says the unit (DCS id, decimal or 0x hex) is in view
@@ -147,15 +159,26 @@ class Client:
 SCAN_LCTRL, SCAN_LALT, SCAN_LSHIFT, SCAN_Z = 0x1D, 0x38, 0x2A, 0x2C
 SPEED_KEYS = {"up": SCAN_LCTRL, "down": SCAN_LALT, "normal": SCAN_LSHIFT}
 MODIFIER_SCANS = {"ctrl": SCAN_LCTRL, "alt": SCAN_LALT, "shift": SCAN_LSHIFT}
+EXTENDED = 0x100  # bit added to a scan code that is sent with KEYEVENTF_EXTENDEDKEY
 FKEY_SCANS = {f"f{n}": 0x3A + n for n in range(1, 11)} | {"f11": 0x57, "f12": 0x58}
+NUMPAD_SCANS = {
+    "num*": 0x37, "num/": 0x35 | EXTENDED, "num-": 0x4A, "numplus": 0x4E, "num.": 0x53,
+    "numenter": 0x1C | EXTENDED,
+    "num7": 0x47, "num8": 0x48, "num9": 0x49, "num4": 0x4B, "num5": 0x4C, "num6": 0x4D,
+    "num1": 0x4F, "num2": 0x50, "num3": 0x51, "num0": 0x52,
+}
+KEY_SCANS = FKEY_SCANS | NUMPAD_SCANS
 
 
 def view_chord(name: str) -> list[int] | None:
-    """Scan codes for a view key such as f2 or ctrl+f2 (left-hand modifiers); None if unknown."""
+    """Scan codes for a key such as f2, ctrl+f2 or alt+num* (left-hand modifiers); None if unknown.
+
+    The numpad plus is `numplus`, because + separates the modifiers.
+    """
     *mods, key = name.lower().split("+")
-    if key not in FKEY_SCANS or any(m not in MODIFIER_SCANS for m in mods):
+    if key not in KEY_SCANS or any(m not in MODIFIER_SCANS for m in mods):
         return None
-    return [MODIFIER_SCANS[m] for m in mods] + [FKEY_SCANS[key]]
+    return [MODIFIER_SCANS[m] for m in mods] + [KEY_SCANS[key]]
 
 
 def _press_chord(scans: list[int]) -> None:
@@ -168,7 +191,7 @@ def _send_scancodes(sequence: list[tuple[int, bool]]) -> None:
     from ctypes import wintypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    INPUT_KEYBOARD, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE = 1, 0x0002, 0x0008
+    INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE = 1, 0x0001, 0x0002, 0x0008
 
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
@@ -186,7 +209,9 @@ def _send_scancodes(sequence: list[tuple[int, bool]]) -> None:
 
     for scan, key_up in sequence:
         flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
-        inp = INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=KEYBDINPUT(0, scan, flags, 0, 0)))
+        if scan & EXTENDED:
+            flags |= KEYEVENTF_EXTENDEDKEY
+        inp = INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=KEYBDINPUT(0, scan & 0xFF, flags, 0, 0)))
         if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
             raise OSError(f"SendInput failed (error {ctypes.get_last_error()})")
         time.sleep(0.05)  # hold long enough for DCS to see it on at least one frame
@@ -235,6 +260,24 @@ def press_view_key(name: str, count: int, delay: float, client: Client) -> None:
     print(f"  sent {name} x{count}")
     time.sleep(0.3)
     client.send("CAM")
+    client.send("CAMV")
+
+
+def key_camera(name: str, count: int, gap: float, client: Client) -> None:
+    """Press a camera key `count` times and read the camera's speed after each press."""
+    if sys.platform != "win32":
+        print("  key injection only works on Windows")
+        return
+    focused = _focus_dcs()
+    print(f"  DCS window focus: {'ok' if focused else 'FAILED -- click into DCS now'}; starting in 3s")
+    time.sleep(3.0)
+    client.log.write(f"## kcam {name} x{count} gap={gap} (focus {'ok' if focused else 'failed'})")
+    client.request("CAMV", "CAMV", timeout=2.0)  # before the first press
+    for n in range(1, count + 1):
+        _press_chord(view_chord(name))
+        time.sleep(gap)
+        reply = client.request("CAMV", "CAMV", timeout=2.0)
+        client.log.write(f"## kcam {name} press {n}: {reply}")
 
 
 AIMED_ID = re.compile(r"\baimed id=(\d+)/")
@@ -316,6 +359,18 @@ def handle(client: Client, text: str) -> bool:
         client.send("GLOBALS " + " ".join(args))
     elif word == "cam":
         client.send("CAM")
+    elif word == "camv":
+        client.send("CAMV")
+    elif word == "track" and len(args) <= 1:
+        client.send("TRACK " + " ".join(args))
+    elif word == "movers" and len(args) <= 1:
+        client.send("MOVERS " + " ".join(args))
+    elif word == "findcam" and len(args) <= 1:
+        client.send("FINDCAM " + " ".join(args))
+    elif word == "kcam" and args and view_chord(args[0]):
+        count = int(args[1]) if len(args) > 1 else 5
+        gap = float(args[2]) if len(args) > 2 else 1.0
+        key_camera(args[0], count, gap, client)
     elif word == "objects" and len(args) <= 1:
         client.send("OBJECTS " + " ".join(args))
     elif word == "view" and 1 <= len(args) <= 2:
