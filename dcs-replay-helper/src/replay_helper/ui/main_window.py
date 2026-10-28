@@ -22,11 +22,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QStyle,
     QVBoxLayout,
     QWidget,
 )
 
+from ..dcs.camera import CameraMatcher
 from ..dcs.keys import Step
 from ..dcs.link import DcsLink
 from ..dcs.protocol import Arrived, Disarmed, Error, Focused, FocusFailed, Hello, Message, Pong, State
@@ -38,6 +40,7 @@ from ..stops import BookmarkStops, Stop
 from ..tacview.events import Event, dcs_unit_id
 from ..timefmt import fmt_model, fmt_speed, fmt_tod, parse_clock, tod_to_model
 from .event_table import EventPanel
+from .object_panel import ObjectPanel
 
 REFRESH_MS = 50
 SPEED_CHOICES = (0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16)
@@ -61,12 +64,14 @@ FOCUS_REASONS = {
 
 class MainWindow(QMainWindow):
     def __init__(self, link: DcsLink, speed: SpeedController | None = None,
-                 seek: SeekController | None = None, settings: Settings | None = None) -> None:
+                 seek: SeekController | None = None, settings: Settings | None = None,
+                 camera: CameraMatcher | None = None) -> None:
         super().__init__()
         self.link = link
         self.speed = speed
         self.seek = seek
         self.settings = settings
+        self.camera = camera
         self.saved_games_dir: Path | None = None  # None: ask Windows (tests point it elsewhere)
         self._seek_event_obj: Event | None = None  # the event the current seek goes to, if any
         self.setWindowTitle("DCS Replay Helper")
@@ -198,6 +203,20 @@ class MainWindow(QMainWindow):
         self.events.seekRequested.connect(self._seek_event)
         self.events.synced.connect(self._log)
 
+        # aircraft speeds and the camera speed
+        self.objects = ObjectPanel(link, settings)
+        self.objects.setEnabled(camera is not None)
+        if camera is not None:
+            self.objects.matchRequested.connect(camera.start)
+            self.objects.cancelRequested.connect(camera.cancel)
+            camera.busyChanged.connect(self.objects.set_busy)
+            camera.progress.connect(self._camera_progress)
+            camera.matched.connect(self._camera_matched)
+            camera.failed.connect(self._camera_failed)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.events, "Tacview events")
+        self.tabs.addTab(self.objects, "Camera speed")
+
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
         left.addLayout(top)
@@ -210,7 +229,7 @@ class MainWindow(QMainWindow):
         left_widget.setLayout(left)
         self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left_widget)
-        splitter.addWidget(self.events)
+        splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([560, 640])
@@ -600,6 +619,19 @@ class MainWindow(QMainWindow):
             self._on_connected(self.link.connected)
             if isinstance(msg, Hello):
                 self._log(f"hook {msg.version} connected")
+
+    # --- camera speed ------------------------------------------------------------------
+    def _camera_progress(self, text: str) -> None:
+        self._log(text)
+        self.objects.set_status(text)
+
+    def _camera_matched(self, text: str) -> None:
+        self._log(text)
+        self.objects.set_status(text)
+
+    def _camera_failed(self, text: str) -> None:
+        self._log(f"camera speed: {text}")
+        self.objects.set_status(text, error=text != "cancelled")
 
     # --- periodic ---------------------------------------------------------------------
     def refresh(self) -> None:

@@ -7,6 +7,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .dcs import protocol
+from .dcs.camera import AutoCameraInput, CameraMatcher
 from .dcs.link import DcsLink
 from .dcs.speed import AutoKeyBackend, SpeedController
 from .seek import SeekController
@@ -33,7 +34,8 @@ def main() -> int:
         return 1
     speed = SpeedController(link, AutoKeyBackend(link))
     seek = SeekController(link, speed)
-    window = MainWindow(link, speed, seek, Settings())
+    camera = CameraMatcher(link, speed, AutoCameraInput(link))
+    window = MainWindow(link, speed, seek, Settings(), camera)
     window.show()
     window.check_hook()
     # replay-helper [recording.zip.acmi] [track.trk]
@@ -43,6 +45,7 @@ def main() -> int:
         elif arg.lower().endswith(".trk"):
             window.events.load_track(arg)
     code = app.exec()
+    camera.shutdown()
     speed.shutdown()
     link.stop()
     return code

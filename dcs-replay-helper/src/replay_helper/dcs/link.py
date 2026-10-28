@@ -91,6 +91,20 @@ class DcsLink(QObject):
     def focus(self, dcs_id: int, unit_name: str | None = None) -> None:
         self.send(protocol.cmd_focus(dcs_id, unit_name))
 
+    def track(self, on: bool) -> None:
+        self.send(protocol.cmd_track(on))
+
+    def request_objects(self, radius: float | None = None) -> None:
+        self.send(protocol.cmd_objects(radius))
+
+    def watch(self, dcs_id: int | None) -> None:
+        self.send(protocol.cmd_watch(dcs_id))
+
+    @property
+    def reports_objects(self) -> bool:
+        """The connected hook measures the camera and object speeds (TRACK, OBJECTS, WATCH)."""
+        return protocol.hook_reports_objects(self.hook_version)
+
     @property
     def takes_actions(self) -> bool:
         """The connected hook changes speed and views itself (SPEED, FOCUS)."""

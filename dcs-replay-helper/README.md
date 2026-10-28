@@ -7,6 +7,7 @@ A desktop helper that drives a DCS track replay that's already running. Plan you
 - **Stop with a pre-roll** a few seconds before the event.
 - **Stop before bookmarks** while you watch or record, so the replay never runs past the next moment you marked.
 - **Show the event's aircraft** in DCS's F2 view when you jump to an event: the shooter, the aircraft lost or ejected from, or the one a bookmark names.
+- **Match the free camera's speed** (F11) to an aircraft, helicopter or missile you want to follow, from a list of their speeds, groups and pilots.
 
 The app talks over localhost UDP to a small hook script in `Saved Games\DCS\Scripts\Hooks`. The hook reports the replay clock and pauses DCS on the exact frame a target is reached: 0.002 s late at 1x and 0.015 s at 4x in testing.
 
@@ -40,7 +41,14 @@ The hook also changes the speed and the view, by sending DCS's own input command
    - "Next stop" under **Seek** says where it'll pause. The camera and the speed are left as they are.
    - Seeks jump past bookmarks. After a jump, Play runs through its target and stops before the next bookmark after it.
    - All bookmarks count, whatever the filters show. A bookmark whose pre-roll point the replay has already passed is skipped.
-7. **Fix an event that lands early or late:** pause DCS exactly when it happens, tick **Show past events** if it has left the list, select it, and click **Sync to selected event**. The correction is saved for that recording.
+7. **Follow an object with the free camera:** open the **Camera speed** tab, point the free camera (F11) the way the object flies, select it and click **Match camera speed**.
+   - The list shows aircraft, helicopters and missiles within the chosen distance of the camera: type, pilot or unit name, group, speed (kt, km/h or m/s), the speed along the camera's view, and distance.
+   - The camera only flies along the way it looks, so the speed that matches is the object's speed along that axis. Looking along its flight path gives its full speed; looking sideways gives little, and looking back at it gives a backward speed. "Camera speed" under the list shows what the camera does now.
+   - The app sets the speed with DCS's own keys and mouse wheel: LAlt+Num\* and LAlt+Num/ (±10% a press) for the bulk, the wheel (1.13 m/s a notch) for the rest, then reads the result back from the hook and corrects it. The DCS window comes to the front and the mouse pointer moves over it for a moment. It takes a few seconds per round.
+   - **Paused:** DCS ignores those keys and the wheel while paused. So the replay runs at 1/16x while the speed is set, then pauses again at the speed it had.
+   - Speeds are worked out from how far each object moved, so they show once the replay has run for a moment. After a seek, let it play briefly before matching.
+   - Needs hook 0.3.0 (**Tools → Install / update DCS hook…**).
+8. **Fix an event that lands early or late:** pause DCS exactly when it happens, tick **Show past events** if it has left the list, select it, and click **Sync to selected event**. The correction is saved for that recording.
 
 **Older hooks:** with hook 0.1.0 (app 1.1.0 and earlier) the app presses the speed keys instead (`LCtrl+Z`, `LAlt+Z`, `LShift+Z`), which brings the DCS window to the front, and it can't switch the view. The log says when the hook is out of date: **Tools → Install / update DCS hook…** and restart DCS.
 
@@ -54,6 +62,7 @@ The hook also changes the speed and the view, by sending DCS's own input command
   - Checks the armed stop every frame and pauses on the first frame at or past it.
   - Refuses stops behind the replay, and drops a stop if the track restarts or the mission ends.
   - Speed and view changes are DCS input commands sent with `DCS.dispatchDigitalAction`: 53/191/246 for faster/slower/1x, 8 for F2. Nothing needs the DCS window in front.
+- **Camera speed:** the hook measures the free camera (`LoGetCameraPosition`, position change per real second, divided by the time acceleration) and every aircraft, helicopter and weapon (`LoGetWorldObjects()` and `('ballistic')`; position change over model time, because DCS exports no velocity). `OBJECTS` lists them with speed along the camera's view axis; `WATCH <id>` puts that one in every `STATE` (`tgt_along=`). The app's controller (`dcs/camera.py`) sends the keys and wheel and waits for the camera to settle before reading again. SPIKE.md rounds 7-8 have the measurements.
 - **Speed:** one step at a time. Each step waits for DCS to report the new speed, and a missed step is retried up to 3 times.
   - Above 1x, each step adds 1x. Below 1x, it halves. Going down from above 1x is done as "back to 1x" then up.
   - If the replay ever runs faster than **Seek at**, it's paused and brought back down.
@@ -72,7 +81,7 @@ The hook also changes the speed and the view, by sending DCS's own input command
 
 ```
 cd dcs-replay-helper
-uv run pytest                                          # 311 tests: hook (Lua 5.1 via lupa), protocol, link,
+uv run pytest                                          # hook (Lua 5.1 via lupa), protocol, link, camera speed,
                                                        # speed, seek, bookmark stops, Tacview, time sync,
                                                        # installer, window
 uv run python tools/fake_dcs.py                        # a stand-in for DCS + hook, on the same ports
@@ -80,7 +89,7 @@ uv run replay-helper                                   # the app, in a second te
 uv run --group build pyinstaller replay_helper.spec    # dist/DCSReplayHelper.exe (on Windows)
 ```
 
-The fake DCS simulates the replay clock, pause and stop, and takes `SPEED` (and the older `KEY`) using the speed steps DCS showed. `FOCUS` answers at once.
+The fake DCS simulates the replay clock, pause and stop, and takes `SPEED` (and the older `KEY`) using the speed steps DCS showed. `FOCUS` answers at once. It has four moving objects (an F-16 at 200 m/s, a Su-27 flying the other way, a Mi-24, a missile) and a free camera that answers `CAM FASTER|SLOWER|WHEEL` like DCS (x1.1, /1.1, 1.13 m/s a notch, ignored paused).
 
 The window tests run headless (`QT_QPA_PLATFORM=offscreen`). They skip on Linux machines without `libEGL`.
 
@@ -97,6 +106,7 @@ src/replay_helper/
   dcs/link.py                      # Qt UDP link, connection watchdog, clock interpolation
   dcs/keys.py                      # LCtrl/LAlt/LShift+Z to the DCS window (Windows), for hooks before 0.2.0
   dcs/speed.py                     # closed-loop speed controller and speed limit
+  dcs/camera.py                    # free camera speed: keys and wheel to the DCS window, closed loop to an object's speed
   dcs/trk.py                       # mission start, date, map and length from a .trk
   seek.py                          # seek state machine: pause, speed, arm, run, slow
   stops.py                         # stops before bookmarks: keeps the hook's stop on the next one
@@ -106,6 +116,7 @@ src/replay_helper/
   settings.py                      # JSON settings in %APPDATA%\dcs-replay-helper
   ui/main_window.py                # main window, menus, remembered settings
   ui/event_table.py                # event list and time sync panel
+  ui/object_panel.py               # aircraft, helicopters and missiles with speeds; Match camera speed
   timefmt.py                       # time formatting and parsing
   app.py                           # entry point (replay-helper / python -m replay_helper)
 replay_helper.spec                 # PyInstaller build of DCSReplayHelper.exe

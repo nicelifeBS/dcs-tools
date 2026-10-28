@@ -118,11 +118,16 @@ class WindowsKeyBackend:
         if u.GetForegroundWindow() != hwnd:
             raise KeyPressError("Windows refused to bring the DCS window to the front")
 
-    def press(self, step: Step) -> None:
+    def focus_dcs(self) -> int:
+        """Bring the DCS window to the front; its handle."""
         hwnd = self._find_window()
         if not hwnd:
             raise KeyPressError(f"no window titled '{DCS_WINDOW_TITLE}'")
         self._focus(hwnd)
+        return hwnd
+
+    def press(self, step: Step) -> None:
+        self.focus_dcs()
         for scan, key_up in key_events(step):
             flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0)
             inp = INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=KEYBDINPUT(0, scan, flags, 0, 0)))

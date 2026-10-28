@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import load_fake_dcs
+from replay_helper.dcs import protocol
 
 fake = load_fake_dcs()
 
@@ -80,3 +81,33 @@ def test_focus() -> None:
     assert sim.drain() == ["FOCUS-FAILED id=42 reason=not_found"]
     sim.handle("FOCUS")
     assert sim.drain() == []
+
+
+def test_camera_inputs_like_dcs() -> None:
+    sim = fake.FakeDcs()
+    sim.handle("CAM FASTER 1")
+    assert sim.camv == 5.0
+    sim.handle("CAM FASTER 2")
+    assert sim.camv == pytest.approx(6.05)
+    sim.handle("CAM SLOWER 1")
+    assert sim.camv == pytest.approx(5.5)
+    sim.handle("CAM WHEEL -9")  # wheel: 1.13 m/s a notch, across zero
+    assert sim.camv == pytest.approx(5.5 - 9 * 1.13)
+    sim.handle("PAUSE")
+    sim.handle("CAM WHEEL 5")  # ignored while paused
+    assert sim.camv == pytest.approx(5.5 - 9 * 1.13)
+
+
+def test_objects_and_watch() -> None:
+    sim = fake.FakeDcs(start=10.0)
+    sim.drain()
+    sim.handle("OBJECTS")
+    assert sim.drain() == ["ERR OBJECTS needs TRACK on"]
+    sim.handle("TRACK on")
+    sim.handle("OBJECTS 2000")
+    lines = sim.drain()
+    assert lines[-1].startswith("OBJ-END") and 1 < len(lines) < 6
+    sim.handle("WATCH 16798208")
+    state = protocol.parse(sim.state_line())
+    assert (state.tgt, state.tgt_along) == (16798208, 50.0)
+    assert all(isinstance(protocol.parse(line), protocol.Obj) for line in lines[:-1])
