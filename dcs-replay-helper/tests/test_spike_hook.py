@@ -681,6 +681,26 @@ def test_movers_sorted_by_distance_to_the_camera_and_limited_by_radius(speeds: H
     assert "radius=3000" in replies[0]
 
 
+@pytest.mark.parametrize("look_x,along,direction", [(1, 200, "fwd"), (-1, -200, "back")])
+def test_movers_give_the_speed_along_the_camera_view_axis(
+    speeds: Hook, look_x: int, along: float, direction: str
+) -> None:
+    speeds.lua.execute(f"""
+        local f = Export.LoGetCameraPosition
+        Export.LoGetCameraPosition = function()
+            local c = f()
+            c.x = {{ x = {look_x}, y = 0, z = 0 }}
+            return c
+        end
+    """)
+    speeds.cmd("TRACK on")
+    speeds.run(8.0)
+    viper = fields(mover_lines(speeds.cmd("MOVERS"))["Viper 1-1"]["line"])
+    assert float(viper["along"]) == pytest.approx(along, abs=0.5)
+    assert float(viper["side"]) == pytest.approx(0, abs=0.5)
+    assert viper["dir"] == direction
+
+
 def test_movers_need_tracking(speeds: Hook) -> None:
     assert speeds.cmd("MOVERS")[0].startswith("MOVERS tracking is off")
     speeds.cmd("TRACK on")

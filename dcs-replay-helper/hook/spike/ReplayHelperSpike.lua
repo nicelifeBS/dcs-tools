@@ -911,6 +911,13 @@ local function mover_line(e, now_m)
         u.id, u.id, e.kind, type_levels(u), tostring(u.name), tostring(u.unit), tostring(u.group),
         tostring(u.coalition), tostring(u.human), speed, v, e.vm and string.format("%.1fs", now_m - e.vm) or "-")
     if e.dist then line = line .. string.format(" dist=%.0f", e.dist) end
+    -- The free camera only moves along its own view axis, so the speed that matches this object
+    -- is its velocity projected on that axis: along= is signed (negative = camera must fly
+    -- backward), side= is what the camera cannot follow. ahead= is the object's offset on the axis.
+    if e.along then
+        line = line .. string.format(" along=%.1f side=%.1f dir=%s ahead=%.0f", e.along, e.side,
+            e.along >= 0 and "fwd" or "back", e.ahead or 0)
+    end
     if e.kind == "weapon" then line = line .. " from=" .. tostring(e.from or "-") end
     return oneline(line)
 end
@@ -1171,6 +1178,13 @@ handlers.MOVERS = function(arg)
     local list, counts, types = {}, { plane = 0, heli = 0, air = 0, weapon = 0 }, {}
     for _, e in pairs(track.mov) do
         if cam and cam.p then e.dist = vlen(vsub(e.pos, cam.p)) else e.dist = nil end
+        e.along, e.side, e.ahead = nil, nil, nil
+        local axis = cam and cam.x and vlen(cam.x) or 0
+        if e.v and e.speed and axis > 0 then
+            e.along = vdot(e.v, cam.x) / axis
+            e.side = math.sqrt(math.max(0, e.speed * e.speed - e.along * e.along))
+            e.ahead = vdot(vsub(e.pos, cam.p), cam.x) / axis
+        end
         if not radius or not e.dist or e.dist <= radius then
             list[#list + 1] = e
             counts[e.kind] = counts[e.kind] + 1

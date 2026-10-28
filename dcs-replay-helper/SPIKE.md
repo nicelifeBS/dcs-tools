@@ -56,7 +56,8 @@ In the step tables, **DCS** = what you do in the game, **Tool** = what you type 
 | 3 | | `kcam alt+num* 8 3.0` | speed after each press, 3 s apart so a ramp can finish |
 | 4 | | `kcam alt+num/ 8 3.0` | does it come back down by about 10% per press? Does it stop at a floor, or reverse? |
 | 5 | | `kwheel up 8 3.0`, then `kwheel down 8 3.0` | the step and any floor or ceiling, with 3 s between turns |
-| 6 | Free camera behind the player's aircraft, looking along its flight direction | `movers 300`, then set the camera speed with keys and wheel until `camv` shows `model=` close to the aircraft's `speed=` | how close the keys and wheel can get |
+| 6 | Free camera behind the player's aircraft, looking along its flight direction | `movers 300`, then set the camera speed with keys and wheel until `camv` shows `fwd`/`model=` close to the aircraft's `along=` | how close the keys and wheel can get. `along=` is the object's speed projected on the camera's view axis (signed), the speed to match |
+| 6b | Same, but turn the camera to look **at the aircraft's nose** (it flies toward you), then `movers 300` | the `along=` and `dir=` of that aircraft | `along` is negative and `dir=back`: the camera has to fly backward (`Num/`) to keep pace. Also try looking sideways: `side=` is the part the camera cannot follow |
 | 7 | Replay running at 1x, then 2x (`key up`) | `camv` | does the camera keep its distance to the aircraft at both speeds? |
 | 8 | A track with missiles or helicopters, replay running | `track on`, then `movers` while one is in the air | `kind=weapon` or `kind=heli`, their speed and `from=`; `weapon_types=` in the first line |
 | 9 | | `q` | send `spike_session.log` |
