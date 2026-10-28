@@ -6,6 +6,8 @@
 -- Reports the replay clock to the Replay Helper app, pauses the sim on an exact model time,
 -- changes time acceleration, and puts the F2 view on a given aircraft.
 --
+-- Object speeds are position changes (DCS exports no velocity): see the free camera section.
+--
 -- Speed and views are DCS input commands sent through DCS.dispatchDigitalAction, the only
 -- route that reaches them during a replay (LoSetCommand from this state is ignored; see
 -- SPIKE.md rounds 4-6): iCommandAccelerate 53, iCommandDecelerate 191, iCommandNoAcceleration
@@ -19,12 +21,18 @@
 --     HELLO <version>
 --     STATE t=<model s> rt=<real s> speed=<measured> accel=<commanded> paused=<bool>
 --           track=<bool> stop=<armed target or -1> start_tod=<mission start, s of day or -1>
---           date=<YYYY-MM-DD or -> theatre=<name or ->                       (~10 Hz)
+--           date=<YYYY-MM-DD or -> theatre=<name or -> cam=<m/s or -> [tgt=<id> tgt_along=<m/s or ->
+--           tgt_side=<m/s or ->]                                               (~10 Hz)
+--             cam: the free camera's speed along its view axis per second of model time, signed
+--             tgt_*: the WATCHed object's speed along the camera's view axis, and across it
 --     ARMED target=<t> now=<t>         ARRIVED t=<t> target=<t> over=<s>
 --     DISARMED reason=<request|restart|mission_end>
 --     FOCUSED id=<dcs id> steps=<n>
 --     FOCUS-FAILED id=<dcs id or -> reason=<not_found|unavailable|no_camera|cycled|max_steps|
 --                                          cancelled|restart|mission_end>
+--     OBJ id=<dcs id> kind=<plane|heli|air|weapon> type=<> unit=<> group=<> coalition=<> human=<bool>
+--         speed=<m/s> along=<m/s> side=<m/s> dist=<m> ahead=<m> age=<s>    (text %XX-encoded, - unknown)
+--     OBJ-END count=<n> total=<n> t=<model s>
 --     PONG <version>                   ERR <text>
 --
 --   app -> hook   127.0.0.1:47811
@@ -32,6 +40,10 @@
 --     SPEED UP|DOWN|NORMAL             one time-acceleration step; the result shows in accel=
 --     FOCUS <dcs id> [unit name]       F2 on that aircraft (by id, else by unit name);
 --                                      FOCUS alone cancels
+--     TRACK on|off                     measure object speeds (needed by OBJECTS and WATCH)
+--     OBJECTS [radius m]               answer with OBJ lines and OBJ-END
+--     WATCH <dcs id>                   put that object's speed along the camera axis in STATE;
+--                                      WATCH alone stops
 --
 -- The stop is checked here, every frame, because a round trip to the app costs ~100 ms of
 -- real time -- 0.4 s of model time at 4x. Measured in DCS: 0.002 s late at 1x, 0.015 s at 4x.
@@ -42,7 +54,7 @@
 -- =====================================================================================
 
 local TAG     = "REPLAYHELPER"
-local VERSION = "0.2.0"
+local VERSION = "0.3.0"
 
 local HOST       = "127.0.0.1"
 local STATE_PORT = 47810   -- hook -> app
@@ -61,6 +73,12 @@ local FOCUS_MAX_STEPS  = 150
 local VIEW_MAX_DIST    = 5000   -- metres: a unit further from the camera is not the one viewed
 local VIEW_MAX_OFF     = 15     -- degrees off the camera axis: 0-2 usually, 7 seen just after a switch
 local INSIDE_DIST      = 10     -- metres: a camera this close to another unit is in its cockpit
+local CAMV_WINDOW      = 0.25   -- real seconds per free-camera speed sample
+local CAMV_MAX         = 5000   -- m/s: faster than this is a view jump, not a speed
+local TRACK_INTERVAL   = 0.2    -- real seconds between object samples
+local TRACK_MIN_DT     = 0.1    -- model seconds a speed is measured over; less is a pause, or noise
+local TRACK_MAX_SPEED  = 3000   -- m/s: faster between two samples is a respawn or a jump, not a speed
+local MAX_OBJECTS      = 100    -- objects listed per OBJECTS request
 
 -- -------------------------------------------------------------------------------------
 -- helpers
@@ -80,6 +98,19 @@ local function token(v)
     local s = tostring(v):gsub("%s+", "_"):gsub("[^%w_%-%.]", "")
     if #s == 0 then return "-" end
     return s
+end
+
+-- One token on the wire that keeps its text: everything outside [A-Za-z0-9_.~-] as %XX.
+local function enc(v)
+    if v == nil then return "-" end
+    local s = tostring(v):gsub("[^%w_%-%.~]", function(c) return string.format("%%%02X", c:byte()) end)
+    if #s == 0 then return "-" end
+    return s
+end
+
+local function opt(v, fmt)
+    if v == nil then return "-" end
+    return string.format(fmt or "%.2f", v)
 end
 
 local function call(f, ...)
@@ -368,6 +399,151 @@ local function focus_tick(r)
 end
 
 -- -------------------------------------------------------------------------------------
+-- free camera speed and object speeds (SPIKE.md rounds 7-8)
+-- -------------------------------------------------------------------------------------
+-- The free camera (F11) flies along its view axis at a set speed, in replay (model) time.
+-- DCS reports neither that speed nor an object's, so both are position changes: the camera's
+-- over real time, divided by the time acceleration; an object's over model time.
+local function vsub(a, b) return { x = a.x - b.x, y = a.y - b.y, z = a.z - b.z } end
+local function vdot(a, b) return a.x * b.x + a.y * b.y + a.z * b.z end
+local function vlen(a) return math.sqrt(vdot(a, a)) end
+
+local function camera()
+    local cam = call(export_fn("LoGetCameraPosition"))
+    local p, x = type(cam) == "table" and vec(cam.p), type(cam) == "table" and vec(cam.x)
+    if p and x then return { p = p, x = x } end
+    return nil
+end
+
+-- model: the camera's speed along its view axis per second of model time, signed (negative:
+-- flying backward). This is the number to compare with an object's `along`.
+local camv = { p = nil, r = nil, model = nil, at = nil }
+
+local function camv_reset()
+    camv.p, camv.r, camv.model, camv.at = nil, nil, nil, nil
+end
+
+local function camv_tick(r)
+    if camv.r and r - camv.r < CAMV_WINDOW then return end
+    local cam = camera()
+    if not cam then
+        camv_reset()
+        return
+    end
+    if camv.p and camv.r then
+        local dt, axis, accel = r - camv.r, vlen(cam.x), commanded_accel()
+        if dt > 0 and axis > 0 and accel > 0 then
+            local fwd = vdot(vsub(cam.p, camv.p), cam.x) / axis / dt
+            if math.abs(fwd) <= CAMV_MAX then
+                camv.model, camv.at = fwd / accel, r
+            else
+                camv.model = nil  -- a view change moved the camera
+            end
+        end
+    end
+    camv.p, camv.r = cam.p, r
+end
+
+-- track.mov[id] = { u = unit, kind, pos, m, v, speed, vm }: v is the velocity in m/s from the
+-- last two positions at least TRACK_MIN_DT of model time apart, and survives a pause (vm says
+-- when it was measured).
+local track = { on = false, next_rt = 0, last_m = nil, mov = {} }
+
+local function track_reset()
+    track.last_m, track.mov, track.next_rt = nil, {}, 0
+end
+
+-- plane, heli, "air" (other air objects), weapon (from the ballistic list), else nil.
+local function kind_of(u)
+    if u.weapon then return "weapon" end
+    if u.l1 == 1 then
+        if u.l2 == 1 then return "plane" end
+        if u.l2 == 2 then return "heli" end
+        return "air"
+    end
+    return nil
+end
+
+local function object_list(arg)
+    local objs = call(export_fn("LoGetWorldObjects"), arg)
+    if type(objs) ~= "table" then return nil end
+    local list = {}
+    for id, o in pairs(objs) do
+        if type(o) == "table" and tonumber(id) then
+            local t = type(o.Type) == "table" and o.Type or {}
+            list[#list + 1] = {
+                id = tonumber(id), name = o.Name, unit = o.UnitName, group = o.GroupName,
+                coalition = o.Coalition, human = type(o.Flags) == "table" and o.Flags.Human or false,
+                pos = vec(o.Position), weapon = arg == "ballistic", l1 = t.level1, l2 = t.level2,
+            }
+        end
+    end
+    return list
+end
+
+local function track_tick(m, r)
+    if not track.on or r < track.next_rt then return end
+    track.next_rt = r + TRACK_INTERVAL
+    if track.last_m and m < track.last_m - RESTART_JUMP then track_reset() end
+    if track.last_m and m - track.last_m < TRACK_MIN_DT then return end  -- paused: keep what we have
+
+    local list = object_list(nil)
+    if not list then return end
+    for _, w in ipairs(object_list("ballistic") or {}) do list[#list + 1] = w end
+
+    local now = {}
+    for _, u in ipairs(list) do
+        local kind = kind_of(u)
+        if kind and u.pos then
+            local prev = track.mov[u.id]
+            local e = { u = u, kind = kind, pos = u.pos, m = m }
+            if prev then
+                e.v, e.speed, e.vm = prev.v, prev.speed, prev.vm
+                local dt = m - prev.m
+                if dt >= TRACK_MIN_DT then
+                    local d = vsub(u.pos, prev.pos)
+                    local v = { x = d.x / dt, y = d.y / dt, z = d.z / dt }
+                    local speed = vlen(v)
+                    if speed <= TRACK_MAX_SPEED then
+                        e.v, e.speed, e.vm = v, speed, m
+                    else
+                        e.v, e.speed, e.vm = nil, nil, nil
+                    end
+                else
+                    e.pos, e.m = prev.pos, prev.m  -- not enough time yet: measure from the older sample
+                end
+            end
+            now[u.id] = e
+        end
+    end
+    track.mov, track.last_m = now, m
+end
+
+-- The object's motion as seen from the camera. along: its velocity on the camera's view axis,
+-- signed -- the speed the free camera must have to keep up, negative meaning flying backward.
+-- side: the rest of its speed, which the camera cannot follow. ahead: its offset on the axis.
+local function motion(e, cam)
+    local out = { speed = e.speed }
+    if cam and cam.p then out.dist = vlen(vsub(e.pos, cam.p)) end
+    local axis = cam and vlen(cam.x) or 0
+    if e.v and axis > 0 then
+        out.along = vdot(e.v, cam.x) / axis
+        out.side = math.sqrt(math.max(0, e.speed * e.speed - out.along * out.along))
+        out.ahead = vdot(vsub(e.pos, cam.p), cam.x) / axis
+    end
+    return out
+end
+
+local watch = { id = nil }
+
+local function watch_fields()
+    if not watch.id then return "" end
+    local e = track.mov[watch.id]
+    local mo = e and motion(e, camera()) or {}
+    return string.format(" tgt=%d tgt_along=%s tgt_side=%s", watch.id, opt(mo.along), opt(mo.side))
+end
+
+-- -------------------------------------------------------------------------------------
 -- commands
 -- -------------------------------------------------------------------------------------
 local handlers = {}
@@ -420,6 +596,66 @@ handlers.SPEED = function(arg)
         return
     end
     if not action(id) then send("ERR SPEED unavailable: no DCS.dispatchDigitalAction") end
+end
+
+-- TRACK on|off: measure object speeds (about 5 world-object reads a second).
+handlers.TRACK = function(arg)
+    local word = tostring(arg):lower():match("^%s*(%a*)%s*$") or ""
+    if word == "on" then
+        if not track.on then track.on, track.next_rt = true, 0 end
+    elseif word == "off" then
+        track.on = false
+        watch.id = nil
+        track_reset()
+    else
+        send("ERR TRACK needs on or off")
+    end
+end
+
+-- OBJECTS [radius]: one OBJ line per aircraft, helicopter and weapon (nearest to the camera
+-- first), then OBJ-END. Speeds are m/s; "-" is unknown (not measured yet).
+handlers.OBJECTS = function(arg)
+    if not track.on then
+        send("ERR OBJECTS needs TRACK on")
+        return
+    end
+    local radius = tonumber(tostring(arg):match("^%s*(%d+%.?%d*)%s*$"))
+    local now_m = model_time() or 0
+    local cam = camera()
+    local list = {}
+    for _, e in pairs(track.mov) do
+        local mo = motion(e, cam)
+        if not radius or not mo.dist or mo.dist <= radius then
+            list[#list + 1] = { e = e, mo = mo }
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.mo.dist and b.mo.dist and a.mo.dist ~= b.mo.dist then return a.mo.dist < b.mo.dist end
+        return a.e.u.id < b.e.u.id
+    end)
+    local n = math.min(#list, MAX_OBJECTS)
+    for i = 1, n do
+        local e, mo, u = list[i].e, list[i].mo, list[i].e.u
+        send(string.format(
+            "OBJ id=%d kind=%s type=%s unit=%s group=%s coalition=%s human=%s speed=%s along=%s side=%s dist=%s ahead=%s age=%s",
+            u.id, e.kind, enc(u.name), enc(u.unit), enc(u.group), enc(u.coalition), tostring(u.human == true),
+            opt(mo.speed, "%.2f"), opt(mo.along, "%.2f"), opt(mo.side, "%.2f"), opt(mo.dist, "%.0f"),
+            opt(mo.ahead, "%.0f"), opt(e.vm and now_m - e.vm, "%.1f")))
+    end
+    send(string.format("OBJ-END count=%d total=%d t=%.3f", n, #list, now_m))
+end
+
+-- WATCH <id>: report that object's speed along the camera view axis in every STATE
+-- (tgt_along=, tgt_side=); WATCH alone stops. Turns TRACK on.
+handlers.WATCH = function(arg)
+    local id = tonumber(tostring(arg):match("^%s*(%d+)%s*$"))
+    if not id then
+        watch.id = nil
+        if not tostring(arg):match("^%s*$") then send("ERR WATCH needs a DCS id") end
+        return
+    end
+    watch.id = id
+    if not track.on then track.on, track.next_rt = true, 0 end
 end
 
 -- FOCUS <dcs id> [unit name]: the id is tried first, then an exact unit name.
@@ -490,6 +726,8 @@ local function on_frame()
         sayf("model time went back %.3f -> %.3f: track restarted", sim.last_m, m)
         disarm("restart")
         focus_fail("restart")
+        track_reset()
+        camv_reset()
         reset_clock()
         pcall(read_mission_info)
     end
@@ -500,16 +738,18 @@ local function on_frame()
     local r = call(dcs_fn("getRealTime"))
     if type(r) ~= "number" then return end
     measure(m, r)
+    camv_tick(r)
+    track_tick(m, r)
     focus_tick(r)
 
     if r >= sim.next_state_rt then
         sim.next_state_rt = r + STATE_INTERVAL
         send(string.format(
-            "STATE t=%.3f rt=%.3f speed=%.3f accel=%.3f paused=%s track=%s stop=%.3f start_tod=%s date=%s theatre=%s",
+            "STATE t=%.3f rt=%.3f speed=%.3f accel=%.3f paused=%s track=%s stop=%.3f start_tod=%s date=%s theatre=%s cam=%s%s",
             m, r, sim.speed or -1, commanded_accel(),
             tostring(call(dcs_fn("getPause")) == true), tostring(call(dcs_fn("isTrackPlaying")) == true),
             stop.target or -1, sim.start_tod and string.format("%.3f", sim.start_tod) or "-1",
-            token(sim.date), token(sim.theatre)))
+            token(sim.date), token(sim.theatre), opt(camv.model, "%.3f"), watch_fields()))
     end
 end
 
@@ -523,6 +763,10 @@ function callbacks.onMissionLoadEnd()
     sim.in_mission = true
     stop.target = nil
     focus.target = nil
+    watch.id = nil
+    track.on = false
+    track_reset()
+    camv_reset()
     reset_clock()
     pcall(read_mission_info)
     sayf("mission loaded: start_time=%s date=%s theatre=%s track=%s",
@@ -533,6 +777,8 @@ end
 function callbacks.onSimulationStop()
     disarm("mission_end")
     focus_fail("mission_end")
+    watch.id = nil
+    track.on = false
     sim.in_mission = false
 end
 

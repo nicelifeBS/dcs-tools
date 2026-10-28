@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from replay_helper.dcs import protocol
-from replay_helper.dcs.protocol import Armed, Arrived, Disarmed, Error, Focused, FocusFailed, Hello, Pong, State
+from replay_helper.dcs.protocol import (Armed, Arrived, Disarmed, Error, Focused, FocusFailed, Hello, Obj, ObjEnd,
+                                        Pong, State)
 
 STATE = ("STATE t=62.950 rt=156.703 speed=3.998 accel=4.000 paused=false track=true stop=67.950 "
          "start_tod=59400.000 date=2018-02-01 theatre=Caucasus")
@@ -69,3 +70,44 @@ def test_speed_and_focus_commands() -> None:
                                            (None, False), ("", False), ("spike-6", False)])
 def test_which_hooks_take_actions(version, takes) -> None:
     assert protocol.hook_takes_actions(version) is takes
+
+
+def test_state_with_the_camera_and_a_watched_object() -> None:
+    s = protocol.parse(STATE + " cam=-12.500 tgt=16797696 tgt_along=-180.250 tgt_side=3.100")
+    assert (s.cam, s.tgt, s.tgt_along, s.tgt_side) == (-12.5, 16797696, -180.25, 3.1)
+    s = protocol.parse(STATE + " cam=- tgt=7 tgt_along=- tgt_side=-")
+    assert (s.cam, s.tgt, s.tgt_along, s.tgt_side) == (None, 7, None, None)
+    s = protocol.parse(STATE)
+    assert (s.cam, s.tgt, s.tgt_along, s.tgt_side) == (None,) * 4
+
+
+def test_obj() -> None:
+    o = protocol.parse("OBJ id=16797696 kind=plane type=F-16C_50 unit=Viper%201-1%20%7C%20Ace group=Viper "
+                       "coalition=blue human=true speed=201.50 along=-200.00 side=5.00 dist=312 ahead=-40 age=0.2")
+    assert o == Obj(id=16797696, kind="plane", type="F-16C_50", unit="Viper 1-1 | Ace", group="Viper",
+                    coalition="blue", human=True, speed=201.5, along=-200.0, side=5.0, dist=312.0,
+                    ahead=-40.0, age=0.2)
+
+
+def test_obj_with_unknown_speed() -> None:
+    o = protocol.parse("OBJ id=5 kind=weapon type=AIM-120C unit=- group=- coalition=red human=false "
+                       "speed=- along=- side=- dist=900 ahead=- age=-")
+    assert (o.unit, o.group, o.speed, o.along, o.side, o.ahead, o.age) == (None,) * 7
+    assert o.kind == "weapon" and o.dist == 900.0 and not o.human
+
+
+def test_obj_end() -> None:
+    assert protocol.parse("OBJ-END count=100 total=130 t=12.500") == ObjEnd(100, 130, 12.5)
+    assert protocol.parse("OBJ id=x kind=plane") is None
+
+
+def test_object_commands() -> None:
+    assert protocol.cmd_track(True) == "TRACK on" and protocol.cmd_track(False) == "TRACK off"
+    assert protocol.cmd_objects() == "OBJECTS" and protocol.cmd_objects(2000) == "OBJECTS 2000"
+    assert protocol.cmd_watch(42) == "WATCH 42" and protocol.cmd_watch() == "WATCH"
+
+
+@pytest.mark.parametrize("version,reports", [("0.3.0", True), ("0.10.0", True), ("fake-0.3.0", True),
+                                             ("0.2.0", False), ("fake-0.2.0", False), (None, False), ("x", False)])
+def test_hook_reports_objects(version, reports) -> None:
+    assert protocol.hook_reports_objects(version) is reports

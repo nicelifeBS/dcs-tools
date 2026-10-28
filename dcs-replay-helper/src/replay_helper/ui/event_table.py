@@ -65,7 +65,6 @@ FILTERS = (
     ("Launches", (Kind.LAUNCH,), False),
     ("Kills", (Kind.DESTROYED,), False),
     ("Ejections", (Kind.EJECTION,), False),
-    ("Take-off / landing", (Kind.TAKEOFF, Kind.LANDING), False),
     ("Other", (Kind.MESSAGE, Kind.OTHER), False),
 )
 

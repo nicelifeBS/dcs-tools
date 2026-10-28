@@ -16,10 +16,12 @@ when it is None), FOCUS-FAILED reason=not_found otherwise.
 from __future__ import annotations
 
 import argparse
+import math
 import socket
 import time
+from urllib.parse import quote
 
-VERSION = "fake-0.2.0"
+VERSION = "fake-0.3.0"
 HOST = "127.0.0.1"
 STATE_PORT = 47810
 CMD_PORT = 47811
@@ -35,6 +37,16 @@ def accel_up(a: float) -> float:
 def accel_down(a: float) -> float:
     # Below and at 1x DCS halves (seen in the spike). Above 1x stepping down by 1 is assumed.
     return max(a / 2 if a <= 1 else a - 1, MIN_ACCEL)
+
+
+# id -> (kind, type, unit, group, coalition, human, speed m/s along +x, start x, y)
+FAKE_OBJECTS = {
+    16797696: ("plane", "F-16C_50", "Viper 1-1 | Ace", "Viper 1-1", "blue", True, 200.0, 0.0, 300.0),
+    16797952: ("plane", "Su-27", "Flanker 2-1", "Flanker 2-1", "red", False, -180.0, 6000.0, 900.0),
+    16798208: ("heli", "Mi-24P", "Hokum 1-1", "Hokum 1-1", "red", False, 50.0, 800.0, -400.0),
+    16798464: ("weapon", "AIM-120C", "-", "-", "blue", False, 600.0, 200.0, 300.0),
+}
+KEY_FACTOR, KEY_FIRST, WHEEL_STEP = 1.1, 5.0, 1.13  # the free camera, as measured in DCS
 
 
 class FakeDcs:
@@ -62,9 +74,35 @@ class FakeDcs:
         self.theatre = theatre
         self.aircraft = aircraft
         self.focused: int | None = None
+        self.track = False  # TRACK on
+        self.watched: int | None = None
+        self.camv = 0.0  # free camera speed along +x, m/s; keys and wheel change it
+        self.cam_x = -50.0
         self.outbox: list[str] = [f"HELLO {VERSION}"]
         self.max_running_accel = 0.0  # fastest speed the replay actually ran at (for tests)
         self._next_state = 0.0
+
+    def object_x(self, oid: int) -> float:
+        o = FAKE_OBJECTS[oid]
+        return o[7] + o[6] * self.t
+
+    def object_lines(self, radius: float | None) -> list[str]:
+        out = []
+        for oid, (kind, typ, unit, group, coal, human, v, _x0, y) in FAKE_OBJECTS.items():
+            ahead = self.object_x(oid) - self.cam_x
+            dist = math.hypot(ahead, y)
+            if radius is not None and dist > radius:
+                continue
+            known = self.t > 0.5  # a speed needs two samples
+            sp = f"{abs(v):.2f}" if known else "-"
+            al = f"{v:.2f}" if known else "-"
+            enc = lambda x: "-" if x in (None, "") else quote(x, safe="")  # noqa: E731
+            out.append(f"OBJ id={oid} kind={kind} type={enc(typ)} unit={enc(unit)} group={enc(group)} "
+                       f"coalition={coal} human={str(human).lower()} speed={sp} along={al} side=0.00 "
+                       f"dist={dist:.0f} ahead={ahead:.0f} age=0.1")
+        out.sort(key=lambda line: float(line.split("dist=")[1].split()[0]))
+        out.append(f"OBJ-END count={len(out)} total={len(FAKE_OBJECTS)} t={self.t:.3f}")
+        return out
 
     def state_line(self) -> str:
         speed = 0.0 if self.paused else self.accel
@@ -72,7 +110,10 @@ class FakeDcs:
             f"STATE t={self.t:.3f} rt={self.rt:.3f} speed={speed:.3f} accel={self.accel:.3f} "
             f"paused={str(self.paused).lower()} track=true "
             f"stop={self.stop if self.stop is not None else -1:.3f} start_tod={self.start_tod:.3f} "
-            f"date={self.date} theatre={self.theatre}"
+            f"date={self.date} theatre={self.theatre} cam={self.camv:.3f}"
+            + (f" tgt={self.watched} tgt_along={FAKE_OBJECTS[self.watched][6]:.2f} tgt_side=0.00"
+               if self.watched in FAKE_OBJECTS and self.t > 0.5 else
+               f" tgt={self.watched} tgt_along=- tgt_side=-" if self.watched is not None else "")
         )
 
     def handle(self, line: str) -> None:
@@ -112,6 +153,17 @@ class FakeDcs:
             else:
                 self.focused = int(args[0])
                 self.outbox.append(f"FOCUSED id={args[0]} steps=1")
+        elif word == "TRACK" and args:
+            self.track = args[0].lower() == "on"
+        elif word == "OBJECTS":
+            if not self.track:
+                self.outbox.append("ERR OBJECTS needs TRACK on")
+            else:
+                self.outbox.extend(self.object_lines(float(args[0]) if args else None))
+        elif word == "WATCH":
+            self.watched = int(args[0]) if args and args[0].isdigit() else None
+        elif word == "CAM" and len(args) == 2:
+            self.camera_input(args[0].upper(), int(args[1]))
         elif word in ("KEY", "SPEED") and args:
             step = args[0].upper()
             if step == "UP":
@@ -123,12 +175,26 @@ class FakeDcs:
         else:
             self.outbox.append(f"ERR unknown command {parts[0]}")
 
+    def camera_input(self, what: str, n: int) -> None:
+        """LAlt+Num* (FASTER) and LAlt+Num/ (SLOWER) press n times: x1.1 and /1.1; the wheel adds
+        1.13 m/s per notch (positive: forward). All ignored while paused, as in DCS."""
+        if self.paused:
+            return
+        for _ in range(abs(n)):
+            if what == "FASTER":
+                self.camv = KEY_FIRST if self.camv < 0.5 else self.camv * KEY_FACTOR
+            elif what == "SLOWER":
+                self.camv = self.camv / KEY_FACTOR if self.camv > 0 else self.camv
+            elif what == "WHEEL":
+                self.camv += math.copysign(WHEEL_STEP, n)
+
     def frame(self, dt: float) -> None:
         """Advance one frame of `dt` real seconds."""
         self.rt += dt
         if not self.paused:
             self.max_running_accel = max(self.max_running_accel, self.accel)
             self.t += dt * self.accel
+            self.cam_x += self.camv * dt * self.accel
             if self.stop is not None and self.t >= self.stop:
                 target, self.stop = self.stop, None
                 self.paused = True

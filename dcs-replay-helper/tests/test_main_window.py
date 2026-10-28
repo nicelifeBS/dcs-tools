@@ -13,6 +13,7 @@ pytestmark = pytest.mark.skipif(not WIDGETS, reason="Qt widgets unavailable (lib
 
 @pytest.fixture
 def app_rig(qapp, fake_dcs_server):
+    from replay_helper.dcs.camera import AutoCameraInput, CameraMatcher
     from replay_helper.dcs.link import DcsLink
     from replay_helper.dcs.speed import AutoKeyBackend, SpeedController
     from replay_helper.seek import SeekController
@@ -26,7 +27,8 @@ def app_rig(qapp, fake_dcs_server):
         assert link.start()
         speed = SpeedController(link, AutoKeyBackend(link))
         seek = SeekController(link, speed)
-        window = MainWindow(link, speed, seek)
+        camera = CameraMatcher(link, speed, AutoCameraInput(link))
+        window = MainWindow(link, speed, seek, camera=camera)
         made.append((link, speed, window))
         return sim, link, window
 
@@ -44,7 +46,7 @@ def test_window_follows_dcs(qapp, app_rig) -> None:
 
     assert wait_until(qapp, lambda: link.connected and link.hook_version)
     window.refresh()
-    assert "Connected to DCS (hook fake-0.2.0)" in window.conn_label.text()
+    assert "Connected to DCS (hook fake-0.3.0)" in window.conn_label.text()
     assert window.clock_label.text() == "1:03.0"
     assert window.tod_label.text() == "Mission time 16:31:02"
     assert window.play_button.text() == "Play"
@@ -285,3 +287,81 @@ def test_settings_are_remembered(qapp) -> None:
     # restored size: Qt clamps windows to the screen).
     assert isinstance(Settings().get("geometry"), str) and isinstance(Settings().get("splitter"), str)
     second.close()
+
+
+# --- camera speed ----------------------------------------------------------------------------
+def objects_tab(qapp, window):
+    window.show()
+    window.tabs.setCurrentWidget(window.objects)
+    window.objects.radius_spin.setValue(20)  # the fake aircraft are several km apart
+    return window.objects
+
+
+def select(panel, unit: str) -> None:
+    for row in range(panel.table.rowCount()):
+        if panel.table.item(row, 1).text().startswith(unit):
+            panel.table.selectRow(row)
+            return
+    raise AssertionError(f"{unit} is not listed")
+
+
+def test_lists_objects_with_speeds_group_and_pilot(qapp, app_rig) -> None:
+    sim, link, window = app_rig(time_scale=4)
+    panel = objects_tab(qapp, window)
+    assert wait_until(qapp, lambda: panel.table.rowCount() == 3, timeout=8)
+    rows = {panel.table.item(r, 1).text(): [panel.table.item(r, c).text() for c in range(6)]
+            for r in range(panel.table.rowCount())}
+    viper = rows["Viper 1-1 | Ace (player)"]
+    assert viper[0] == "Aircraft F-16C_50" and viper[2] == "Viper 1-1"
+    assert wait_until(qapp, lambda: "389 kt" in panel.table.item(0, 3).text() or "389 kt" in str(
+        [panel.table.item(r, 3).text() for r in range(3)]), timeout=8)
+    assert rows["Flanker 2-1"][0] == "Aircraft Su-27"
+    assert any(r[0].startswith("Helicopter") for r in rows.values())
+
+
+def test_kind_filter_and_units(qapp, app_rig) -> None:
+    sim, link, window = app_rig(time_scale=4)
+    panel = objects_tab(qapp, window)
+    assert wait_until(qapp, lambda: panel.table.rowCount() == 3, timeout=8)
+    panel.kind_checks["heli"].setChecked(False)
+    assert panel.table.rowCount() == 2
+    panel.unit_combo.setCurrentText("km/h")
+    assert wait_until(qapp, lambda: any("km/h" in panel.table.item(r, 3).text() for r in range(2)), timeout=3)
+
+
+def test_match_button_needs_a_selection(qapp, app_rig) -> None:
+    sim, link, window = app_rig(time_scale=4)
+    panel = objects_tab(qapp, window)
+    assert wait_until(qapp, lambda: panel.table.rowCount() == 3, timeout=8)
+    assert not panel.match_button.isEnabled()
+    select(panel, "Hokum")
+    assert panel.match_button.isEnabled() and not panel.cancel_button.isEnabled()
+
+
+def test_match_camera_speed_while_playing(qapp, app_rig) -> None:
+    sim, link, window = app_rig(time_scale=1)
+    panel = objects_tab(qapp, window)
+    assert wait_until(qapp, lambda: sim.t > 1.0 and panel.table.rowCount() == 3, timeout=8)
+    select(panel, "Hokum")
+    panel.match_button.click()
+    assert wait_until(qapp, lambda: panel.cancel_button.isEnabled(), timeout=2)
+    assert wait_until(qapp, lambda: not panel.cancel_button.isEnabled(), timeout=40)
+    assert abs(sim.camv - 50.0) <= 1.0 and not sim.paused
+    assert "matches Hokum 1-1" in panel.status.text()
+    assert wait_until(qapp, lambda: sim.watched is None, timeout=2)  # watching stops
+    assert "camera" in window.log_view.toPlainText()
+
+
+def test_match_camera_speed_from_a_pause(qapp, app_rig) -> None:
+    sim, link, window = app_rig(time_scale=1, paused=True, start=10.0)
+    panel = objects_tab(qapp, window)
+    window.speed.set_target(2)
+    assert wait_until(qapp, lambda: sim.accel == 2 and panel.table.rowCount() == 3, timeout=8)
+    select(panel, "Hokum")
+    panel.match_button.click()
+    assert wait_until(qapp, lambda: not sim.paused, timeout=5)  # runs, slowly
+    assert sim.accel < 0.1
+    assert wait_until(qapp, lambda: not panel.cancel_button.isEnabled() and sim.paused, timeout=60)
+    assert abs(sim.camv - 50.0) <= 1.0
+    assert wait_until(qapp, lambda: sim.accel == 2, timeout=10)  # the playback speed it had
+    assert "matches Hokum 1-1" in panel.status.text()
