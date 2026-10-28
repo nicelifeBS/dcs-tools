@@ -47,7 +47,16 @@ In the step tables, **DCS** = what you do in the game, **Tool** = what you type 
 - **The camera flies in replay time, not real time.** At 1/64x the first `Num*` press gave 0.08 m/s, 1/64 of the 5.0 at 1x, and the wheel step shrank the same way. So the set speed means the same thing at any replay speed and compares directly with an object's speed. `CAMV` now prints `model=` (real-time speed divided by `accel`) for that. This replaces the earlier `need=` idea.
 - **Unclear:** `Num/` five times (3 s apart was not used) showed 21.0, 21.1, 21.1, 21.1, 21.1 m/s: no slowing. The wheel flattened at about 16.5 (up) and 20 (down). Either a limit, or the speed ramps over seconds (`FreeCameraMoveAccelerateTimeMax = 6.0` in `View.lua`) and 1 s between samples is too short.
 
-### Round 8: what is left
+### Results round 8 (A-10C track, flown by hand)
+
+- **Command ids:** `globals iCommandViewSpeed ...` finds nothing in any Lua state. The app cannot send these by id: it has to use the keystrokes (`LAlt+Num*`, `LAlt+Num/`) or the wheel.
+- **Hold:** the camera speed stays constant (+-1 m/s) at 164, 140 and 112 m/s. Aircraft speeds are reachable.
+- **Slowing and reversing:** `Num/` slows the camera down, passes through 0 and reverses. `camv fwd` goes negative (-211, then -139 m/s steady), so backward matching works. The change is a smooth ramp (about 25 m/s per second), not a jump, so wait for it to settle before reading `camv`.
+- **Direction:** `movers` `along=` follows the camera's view axis (negative when the aircraft flies toward the camera). `side=` is large while the aircraft maneuvers or the camera is not aligned.
+- **Followed aircraft:** with the camera at 164 m/s the player's A-10C (`along=171`) stayed at 34 m, later 263 m. The speed is close enough to follow, but needs a fine step (the wheel) to avoid drifting.
+- **Not tested yet:** helicopters, missiles, 2x replay, and the `kcam`/`kwheel` runs with 3 s gaps.
+
+### Round 8: what is left (steps 1, 6 done; 8 postponed)
 
 | # | DCS | Tool | Look for |
 |---|-----|------|----------|
