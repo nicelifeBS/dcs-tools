@@ -28,9 +28,8 @@ MS_TO_KMH = 3.6
 UNITS = (("kt", MS_TO_KT), ("km/h", MS_TO_KMH), ("m/s", 1.0))
 KIND_NAMES = {"plane": "Aircraft", "heli": "Helicopter", "weapon": "Missile", "air": "Air"}
 COLUMNS = ("Type", "Pilot / unit", "Group", "Speed", "Along the view", "Distance")
-KIND_FILTERS = (("plane", "Aircraft"), ("heli", "Helicopters"), ("weapon", "Missiles"))
-DEFAULT_RADIUS_KM = 20
-DEFAULT_KEYS = 50
+KIND_FILTERS = (("plane", "Aircraft"), ("heli", "Helicopters"))
+DEFAULT_RADIUS_KM = 1
 COALITION_COLORS = {"blue": "#1565c0", "red": "#c62828"}
 ERROR_STYLE = "color: #c62828;"
 
@@ -65,7 +64,6 @@ def along_text(o: Obj, factor: float, unit: str) -> str:
 class ObjectPanel(QWidget):
     matchRequested = Signal(int, str)  # DCS id, label
     cancelRequested = Signal()
-    keysChanged = Signal(int)  # key presses per round
 
     def __init__(self, link: DcsLink, settings=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -119,12 +117,6 @@ class ObjectPanel(QWidget):
             "and the mouse pointer moves over it for a moment. Paused, the replay runs in slow "
             "motion meanwhile and is paused again after.")
         self.match_button.clicked.connect(self._match)
-        self.keys_spin = QSpinBox()
-        self.keys_spin.setRange(1, 100)
-        self.keys_spin.setValue(DEFAULT_KEYS)
-        self.keys_spin.setToolTip("Key presses (LAlt+Num* / Num/) sent at once in each round. More is faster, "
-                                  "but if DCS misses presses, lower it.")
-        self.keys_spin.valueChanged.connect(self.keysChanged.emit)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancelRequested.emit)
         self.status = QLabel()
@@ -139,9 +131,6 @@ class ObjectPanel(QWidget):
         buttons = QHBoxLayout()
         buttons.addWidget(self.match_button)
         buttons.addWidget(self.cancel_button)
-        buttons.addSpacing(12)
-        buttons.addWidget(QLabel("Key presses per round"))
-        buttons.addWidget(self.keys_spin)
         buttons.addStretch(1)
         buttons.addWidget(self.camera_label)
         layout = QVBoxLayout(self)
@@ -171,9 +160,6 @@ class ObjectPanel(QWidget):
             self.unit_combo.setCurrentIndex(i)
         if isinstance(st.get("object_radius_km"), int):
             self.radius_spin.setValue(st.get("object_radius_km"))
-        if isinstance(st.get("camera_keys"), int):
-            self.keys_spin.setValue(st.get("camera_keys"))
-        self.keys_spin.valueChanged.connect(lambda v: st.set("camera_keys", v))
         saved = st.get("object_kinds")
         if isinstance(saved, list):
             for kind, check in self.kind_checks.items():

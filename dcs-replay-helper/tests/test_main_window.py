@@ -293,6 +293,7 @@ def test_settings_are_remembered(qapp) -> None:
 def objects_tab(qapp, window):
     window.show()
     window.tabs.setCurrentWidget(window.objects)
+    window.objects.radius_spin.setValue(20)  # the fake aircraft are several km apart
     return window.objects
 
 
@@ -307,23 +308,21 @@ def select(panel, unit: str) -> None:
 def test_lists_objects_with_speeds_group_and_pilot(qapp, app_rig) -> None:
     sim, link, window = app_rig(time_scale=4)
     panel = objects_tab(qapp, window)
-    assert wait_until(qapp, lambda: panel.table.rowCount() == 4, timeout=8)
+    assert wait_until(qapp, lambda: panel.table.rowCount() == 3, timeout=8)
     rows = {panel.table.item(r, 1).text(): [panel.table.item(r, c).text() for c in range(6)]
             for r in range(panel.table.rowCount())}
     viper = rows["Viper 1-1 | Ace (player)"]
     assert viper[0] == "Aircraft F-16C_50" and viper[2] == "Viper 1-1"
     assert wait_until(qapp, lambda: "389 kt" in panel.table.item(0, 3).text() or "389 kt" in str(
-        [panel.table.item(r, 3).text() for r in range(4)]), timeout=8)
+        [panel.table.item(r, 3).text() for r in range(3)]), timeout=8)
     assert rows["Flanker 2-1"][0] == "Aircraft Su-27"
-    assert any(r[0].startswith("Missile") for r in rows.values())
     assert any(r[0].startswith("Helicopter") for r in rows.values())
 
 
 def test_kind_filter_and_units(qapp, app_rig) -> None:
     sim, link, window = app_rig(time_scale=4)
     panel = objects_tab(qapp, window)
-    assert wait_until(qapp, lambda: panel.table.rowCount() == 4, timeout=8)
-    panel.kind_checks["weapon"].setChecked(False)
+    assert wait_until(qapp, lambda: panel.table.rowCount() == 3, timeout=8)
     panel.kind_checks["heli"].setChecked(False)
     assert panel.table.rowCount() == 2
     panel.unit_combo.setCurrentText("km/h")
@@ -333,7 +332,7 @@ def test_kind_filter_and_units(qapp, app_rig) -> None:
 def test_match_button_needs_a_selection(qapp, app_rig) -> None:
     sim, link, window = app_rig(time_scale=4)
     panel = objects_tab(qapp, window)
-    assert wait_until(qapp, lambda: panel.table.rowCount() == 4, timeout=8)
+    assert wait_until(qapp, lambda: panel.table.rowCount() == 3, timeout=8)
     assert not panel.match_button.isEnabled()
     select(panel, "Hokum")
     assert panel.match_button.isEnabled() and not panel.cancel_button.isEnabled()
@@ -342,7 +341,7 @@ def test_match_button_needs_a_selection(qapp, app_rig) -> None:
 def test_match_camera_speed_while_playing(qapp, app_rig) -> None:
     sim, link, window = app_rig(time_scale=1)
     panel = objects_tab(qapp, window)
-    assert wait_until(qapp, lambda: sim.t > 1.0 and panel.table.rowCount() == 4, timeout=8)
+    assert wait_until(qapp, lambda: sim.t > 1.0 and panel.table.rowCount() == 3, timeout=8)
     select(panel, "Hokum")
     panel.match_button.click()
     assert wait_until(qapp, lambda: panel.cancel_button.isEnabled(), timeout=2)
@@ -357,7 +356,7 @@ def test_match_camera_speed_from_a_pause(qapp, app_rig) -> None:
     sim, link, window = app_rig(time_scale=1, paused=True, start=10.0)
     panel = objects_tab(qapp, window)
     window.speed.set_target(2)
-    assert wait_until(qapp, lambda: sim.accel == 2 and panel.table.rowCount() == 4, timeout=8)
+    assert wait_until(qapp, lambda: sim.accel == 2 and panel.table.rowCount() == 3, timeout=8)
     select(panel, "Hokum")
     panel.match_button.click()
     assert wait_until(qapp, lambda: not sim.paused, timeout=5)  # runs, slowly
@@ -366,10 +365,3 @@ def test_match_camera_speed_from_a_pause(qapp, app_rig) -> None:
     assert abs(sim.camv - 50.0) <= 1.0
     assert wait_until(qapp, lambda: sim.accel == 2, timeout=10)  # the playback speed it had
     assert "matches Hokum 1-1" in panel.status.text()
-
-
-def test_key_presses_per_round_is_a_setting(qapp, app_rig) -> None:
-    sim, link, window = app_rig()
-    assert window.camera.max_keys == 50 and window.objects.keys_spin.value() == 50
-    window.objects.keys_spin.setValue(12)
-    assert window.camera.max_keys == 12

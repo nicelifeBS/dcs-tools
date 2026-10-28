@@ -42,7 +42,7 @@ The hook also changes the speed and the view, by sending DCS's own input command
    - Seeks jump past bookmarks. After a jump, Play runs through its target and stops before the next bookmark after it.
    - All bookmarks count, whatever the filters show. A bookmark whose pre-roll point the replay has already passed is skipped.
 7. **Follow an object with the free camera:** open the **Camera speed** tab, point the free camera (F11) the way the object flies, select it and click **Match camera speed**.
-   - The list shows aircraft, helicopters and missiles within the chosen distance of the camera: type, pilot or unit name, group, speed (kt, km/h or m/s), the speed along the camera's view, and distance.
+   - The list shows aircraft and helicopters within the chosen distance of the camera: type, pilot or unit name, group, speed (kt, km/h or m/s), the speed along the camera's view, and distance.
    - The camera only flies along the way it looks, so the speed that matches is the object's speed along that axis. Looking along its flight path gives its full speed; looking sideways gives little, and looking back at it gives a backward speed. "Camera speed" under the list shows what the camera does now.
    - The app sets the speed with DCS's own keys and mouse wheel: LAlt+Num\* and LAlt+Num/ (±10% a press) for the bulk, the wheel (1.13 m/s a notch) for the rest, then reads the result back from the hook and corrects it. The DCS window comes to the front and the mouse pointer moves over it for a moment. It takes a few seconds per round.
    - **Paused:** DCS ignores those keys and the wheel while paused. So the replay runs at 1/16x while the speed is set, then pauses again at the speed it had.
