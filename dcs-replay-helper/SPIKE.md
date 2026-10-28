@@ -30,57 +30,38 @@ Nothing is written to the DCS install folder. The hook only logs and answers on 
 - **The hook's frame-checked stop** landed within 0.002 s at 1x and 0.015 s at 4x.
 - **Model time is seconds since mission start.** The mission start time is in `DCS.getCurrentMission().mission.start_time`.
 
-## Round 7: match the free camera's speed to an object (open)
+## Round 7: match the free camera's speed to an object (results in, round 8 below)
 
-**Goal:** list nearby aircraft, helicopters and missiles with their speeds, and set the free camera (F11) to one of them.
+**Setup:** copy `hook/spike/ReplayHelperSpike.lua` to `Saved Games\DCS\Scripts\Hooks`, move `ReplayHelper.lua` out of that folder, don't run the app, restart DCS. In a terminal run `python tools\spike_client.py` and play a track. Afterwards delete the spike hook and reinstall the real one (**Tools → Install / update DCS hook…**).
 
-**Found so far:** LAlt+`/`, LAlt+`*` and the mouse wheel change the camera speed (the wheel is finer). None of them work while the replay is paused. Open: do they work in slow motion, and what about missiles?
+In the step tables, **DCS** = what you do in the game, **Tool** = what you type at the `>` prompt of `spike_client.py`. `kcam`, `kwheel` and `slow` send the keys, wheel or speed steps to DCS themselves. Keep the mouse cursor over the DCS window for `kwheel`.
 
-**Setup:** copy `hook/spike/ReplayHelperSpike.lua` to `Saved Games\DCS\Scripts\Hooks`, move `ReplayHelper.lua` out of that folder, don't run the app, restart DCS. In a terminal run `python tools\spike_client.py` and play a track (one with missiles is best). Afterwards delete the spike hook and reinstall the real one (**Tools → Install / update DCS hook…**).
+### Results (A-10C track, Caucasus)
 
-Two places to act, marked in every step:
-- **DCS** = something you do in the game.
-- **Tool** = something you type at the `>` prompt of `spike_client.py`. Results print there and go to `spike_session.log`.
+- **Object speeds work.** `track on` then `movers` gave aircraft with speed, distance, `unit` and `group`. A human pilot's name is in the unit name (`"fubar 1-1 | nicelife"`). Paused, it showed the speeds from just before the pause. No helicopters or missiles in this track, so those are untested.
+- **The commands:** F11 "camera moving forward" is `iCommandViewSpeedUp` (LAlt+`Num*`) and "moving backward" is `iCommandViewSlowDown` (LAlt+`Num/`). Despite the names they change a speed. The numeric ids are not known yet. Other candidates from `findcam`: `iCommandViewCameraAltForward/Back(Slow)` (RAlt+RCtrl+`Num*`/`Num/`, held keys), and the config `FreeCamera_speed*` in `View.lua`.
+- **Keys are coarse:** from standstill the first `Num*` gives 5.0 m/s, then each press is about +10% (5.0, 5.5, 6.1, 6.7, 7.3).
+- **The wheel is fine:** about 1.1 m/s per notch, additive (up slowed the camera, down sped it up).
+- **Paused: nothing changes and the camera stands still** (`camv=0`). The speed set before is kept: the camera flew on at 19.9 m/s after resuming.
+- **Slow motion works.** At 1/64x (`accel=0.016`) keys and wheel still change the speed.
+- **The camera flies in replay time, not real time.** At 1/64x the first `Num*` press gave 0.08 m/s, 1/64 of the 5.0 at 1x, and the wheel step shrank the same way. So the set speed means the same thing at any replay speed and compares directly with an object's speed. `CAMV` now prints `model=` (real-time speed divided by `accel`) for that. This replaces the earlier `need=` idea.
+- **Unclear:** `Num/` five times (3 s apart was not used) showed 21.0, 21.1, 21.1, 21.1, 21.1 m/s: no slowing. The wheel flattened at about 16.5 (up) and 20 (down). Either a limit, or the speed ramps over seconds (`FreeCameraMoveAccelerateTimeMax = 6.0` in `View.lua`) and 1 s between samples is too short.
 
-`kcam`, `kwheel` and `slow` send the keys, wheel or speed steps to DCS themselves, so just type them. Keep the mouse cursor over the DCS window for `kwheel`.
-
-### A. Speeds of other objects
-
-| # | DCS | Tool | Look for |
-|---|-----|------|----------|
-| 1 | Play the track | `track on` | `TRACK on` |
-| 2 | Let it run 10 s (fire a missile if you can), then pause | `movers` | one `MOV` line per object: kind, unit, group, `speed=`, `dist=`, `need=`. Missiles: `kind=weapon`, `from=`, and `weapon_types=` in the first line |
-| 3 | Missile still in the air, paused | `movers` | the speed is the last one measured before the pause |
-| 4 | | `movers 5000` | only objects within 5 km of the camera |
-
-### B. Camera speed keys and wheel
+### Round 8: what is left
 
 | # | DCS | Tool | Look for |
 |---|-----|------|----------|
-| 5 | Press F11 (free camera), keep the replay **running** | `camv` | `CAMV speed=0.00` |
-| 6 | | `kcam alt+num* 5 1.0` | a `CAMV` line after each of 5 presses: does the speed step? `fwd=` sign shows the direction |
-| 7 | | `kcam alt+num/ 5 1.0` | the opposite direction. Does it slow down first, or reverse at once? |
-| 8 | | `kwheel up 5 1.0` then `kwheel down 5 1.0` | the wheel's step size |
-| 9 | Pause the replay | `camv` (a few times) | `paused=true`: does the camera keep flying, or stop? |
-| 10 | Resume | `camv` | does it fly on at the old speed? |
+| 1 | Free camera (F11), replay running | `globals iCommandViewSpeed iCommandViewSlow` | `iCommandViewSpeedUp=<n>` and `iCommandViewSlowDown=<n>`, in any line. If no numbers appear, say so |
+| 2 | | `digital <SpeedUp id>` three times, 3 s apart, then `camv` | the speed rose without a keystroke (and without DCS focus) |
+| 3 | | `kcam alt+num* 8 3.0` | speed after each press, 3 s apart so a ramp can finish |
+| 4 | | `kcam alt+num/ 8 3.0` | does it come back down by about 10% per press? Does it stop at a floor, or reverse? |
+| 5 | | `kwheel up 8 3.0`, then `kwheel down 8 3.0` | the step and any floor or ceiling, with 3 s between turns |
+| 6 | Free camera behind the player's aircraft, looking along its flight direction | `movers 300`, then set the camera speed with keys and wheel until `camv` shows `model=` close to the aircraft's `speed=` | how close the keys and wheel can get |
+| 7 | Replay running at 1x, then 2x (`key up`) | `camv` | does the camera keep its distance to the aircraft at both speeds? |
+| 8 | A track with missiles or helicopters, replay running | `track on`, then `movers` while one is in the air | `kind=weapon` or `kind=heli`, their speed and `from=`; `weapon_types=` in the first line |
+| 9 | | `q` | send `spike_session.log` |
 
-### C. Slow motion (the near-pause)
-
-| # | DCS | Tool | Look for |
-|---|-----|------|----------|
-| 11 | Replay running | `slow` | after ~5 s, `CAMV ... accel=0.016` (1/64x) |
-| 12 | | `camv` | is `speed=` the same as at 1x, or 64 times smaller? |
-| 13 | | `kcam alt+num* 5 1.0`, then `kwheel up 5 1.0` | do keys and wheel still step the speed at 1/64x? |
-| 14 | Aircraft next to the camera | `movers` | note its `need=` (object speed × replay speed). Set the camera to about that, go back to 1x (`digital 246`): does the camera keep up with the aircraft? |
-
-### Finish
-
-| # | Tool | |
-|---|------|-|
-| 15 | `findcam` | lists the camera key and wheel bindings with command names |
-| 16 | `q` | then send `spike_session.log` and the `REPLAYHELPER` lines from `dcs.log`, plus what the camera did on screen |
-
-**What it decides:** if the keys and wheel work at 1/64x, the app resumes slowly, steps the camera speed to the chosen object's, and pauses again (about a second real time, 0.02 s replay time). If speeds look right, the app gets an object list with a *Match camera speed* button.
+**What it decides:** the app can match the camera to an object in slow motion (steps 6 and 7 say how well), because the speed is in replay time and survives a pause. How the app steps the speed (keys, wheel, or ids) depends on steps 2–5.
 
 ## Round 6: focus by stepping F2 (done)
 
