@@ -182,9 +182,9 @@ class WindowsCameraInput:
     """
 
     blocking = True
-    multi_notch = True  # one wheel event for all the notches; the matcher turns it off if DCS counts fewer
+    multi_notch = False  # True: one wheel event for all notches. DCS counted 100 as about 2 (SPIKE.md), so off
     KEY_GAP_S = 0.02  # between presses
-    WHEEL_GAP_S = 0.03  # between notches
+    WHEEL_GAP_S = 0.02  # between notches
     HOLD_S = 0.03  # a key held down: long enough for DCS to see it on a frame
 
     def __init__(self) -> None:
@@ -251,7 +251,7 @@ class AutoCameraInput:
         self._link = link
         self._fake = LinkCameraInput(link.send)
         self._windows: WindowsCameraInput | None = None
-        self._multi_notch = True
+        self._multi_notch = False
 
     def _backend(self) -> CameraInput:
         if (self._link.hook_version or "").startswith("fake"):

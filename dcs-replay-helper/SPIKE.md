@@ -237,3 +237,7 @@ Type these at the client's `>` prompt. Results print as they arrive and are save
 - Short notes on tests 4–9: which speed method worked, the speed steps you saw, whether speed survives a pause, and whether the stop landed on the right moment.
 
 Delete `ReplayHelperSpike.lua` from `Scripts\Hooks` afterwards. The real hook replaces it.
+
+### Multi-notch wheel event (app test, A-10C track)
+
+One wheel event of 100 notches (mouseData 12000) moved the camera by +1.9 m/s where 100 single notches give about 113 m/s. DCS counts a multi-notch event as one or two notches, so the app sends one event per notch, 0.02 s apart (0.03 s apart all 100 were counted).
