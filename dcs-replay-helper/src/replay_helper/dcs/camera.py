@@ -38,7 +38,7 @@ KEY_FIRST = 5.0  # m/s the first key press gives from rest
 WHEEL_STEP = 1.13  # m/s per notch
 KEY_MIN_ERR = 3.0  # below this error the wheel is finer than the keys
 MAX_KEYS = 50  # presses per round (the default; the UI sets it)
-MAX_NOTCHES = 100  # notches per round
+MAX_NOTCHES = 250  # notches per round
 LEAVE_BACKWARD_TO = 4.0  # flying backward and needing forward: wheel up to about this, then keys
 SLOW_ENOUGH = 8.0  # needing zero or backward while flying forward faster than this: keys slow it first
 
