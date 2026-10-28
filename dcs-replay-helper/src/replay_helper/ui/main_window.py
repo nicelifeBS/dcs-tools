@@ -209,6 +209,8 @@ class MainWindow(QMainWindow):
         if camera is not None:
             self.objects.matchRequested.connect(camera.start)
             self.objects.cancelRequested.connect(camera.cancel)
+            camera.max_keys = self.objects.keys_spin.value()
+            self.objects.keysChanged.connect(lambda n: setattr(camera, "max_keys", n))
             camera.busyChanged.connect(self.objects.set_busy)
             camera.progress.connect(self._camera_progress)
             camera.matched.connect(self._camera_matched)

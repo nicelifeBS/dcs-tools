@@ -366,3 +366,10 @@ def test_match_camera_speed_from_a_pause(qapp, app_rig) -> None:
     assert abs(sim.camv - 50.0) <= 1.0
     assert wait_until(qapp, lambda: sim.accel == 2, timeout=10)  # the playback speed it had
     assert "matches Hokum 1-1" in panel.status.text()
+
+
+def test_key_presses_per_round_is_a_setting(qapp, app_rig) -> None:
+    sim, link, window = app_rig()
+    assert window.camera.max_keys == 30 and window.objects.keys_spin.value() == 30
+    window.objects.keys_spin.setValue(12)
+    assert window.camera.max_keys == 12

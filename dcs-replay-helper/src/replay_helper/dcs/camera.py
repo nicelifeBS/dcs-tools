@@ -37,7 +37,7 @@ KEY_FACTOR = 1.1  # per press
 KEY_FIRST = 5.0  # m/s the first key press gives from rest
 WHEEL_STEP = 1.13  # m/s per notch
 KEY_MIN_ERR = 3.0  # below this error the wheel is finer than the keys
-MAX_KEYS = 30  # presses per round
+MAX_KEYS = 30  # presses per round (the default; the UI sets it)
 MAX_NOTCHES = 40  # notches per round
 LEAVE_BACKWARD_TO = 4.0  # flying backward and needing forward: wheel up to about this, then keys
 SLOW_ENOUGH = 8.0  # needing zero or backward while flying forward faster than this: keys slow it first
@@ -69,7 +69,7 @@ def _keys_for_ratio(target: float, current: float) -> int:
     return round(math.log(target / current) / math.log(KEY_FACTOR))
 
 
-def plan(target: float, current: float) -> Action | None:
+def plan(target: float, current: float, max_keys: int = MAX_KEYS) -> Action | None:
     """The next input towards `target` m/s (signed) from `current`, or None when close enough."""
     err = target - current
     if abs(err) <= TOLERANCE:
@@ -81,10 +81,10 @@ def plan(target: float, current: float) -> Action | None:
         elif abs(err) > KEY_MIN_ERR:
             n = _keys_for_ratio(target, current)
             if n:
-                n = max(-MAX_KEYS, min(MAX_KEYS, n))
+                n = max(-max_keys, min(max_keys, n))
                 return Action("faster" if n > 0 else "slower", abs(n))
     elif current > SLOW_ENOUGH:
-        n = max(-MAX_KEYS, _keys_for_ratio(LEAVE_BACKWARD_TO, current))
+        n = max(-max_keys, _keys_for_ratio(LEAVE_BACKWARD_TO, current))
         return Action("slower", -n)
     elif target > 0 and current < 0:
         err = LEAVE_BACKWARD_TO - current
@@ -249,6 +249,7 @@ class CameraMatcher(QObject):
         self._clock = clock
         self._executor: ThreadPoolExecutor | None = None
 
+        self.max_keys = MAX_KEYS  # key presses per round
         self._obj: int | None = None
         self._label = ""
         self._phase = "idle"  # idle | slowing | wait | sending
@@ -353,7 +354,7 @@ class CameraMatcher(QObject):
         if now < self._settle_until or not (steady or now >= self._settle_until + SETTLE_MAX_S - SETTLE_MIN_S):
             return
 
-        action = plan(s.tgt_along, s.cam)
+        action = plan(s.tgt_along, s.cam, self.max_keys)
         if action is None:
             self._ok += 1
             if self._ok >= CONFIRMS:
