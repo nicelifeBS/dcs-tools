@@ -54,6 +54,9 @@ In the step tables, **DCS** = what you do in the game, **Tool** = what you type 
 - **Slowing and reversing:** `Num/` slows the camera down, passes through 0 and reverses. `camv fwd` goes negative (-211, then -139 m/s steady), so backward matching works. The change is a smooth ramp (about 25 m/s per second), not a jump, so wait for it to settle before reading `camv`.
 - **Direction:** `movers` `along=` follows the camera's view axis (negative when the aircraft flies toward the camera). `side=` is large while the aircraft maneuvers or the camera is not aligned.
 - **Followed aircraft:** with the camera at 164 m/s the player's A-10C (`along=171`) stayed at 34 m, later 263 m. The speed is close enough to follow, but needs a fine step (the wheel) to avoid drifting.
+- **Keys, 3 s apart (steps 3, 4):** `Num*` gives 5.0, 5.5, 6.1, 6.7, 7.4, 8.0, 8.9, 9.7 m/s: x1.1 per press. `Num/` gives 8.9, 8.0, 7.3, 6.7, 6.1, 5.5, 5.0, 4.6: / 1.1 per press. No floor in range, and the keys never cross zero. The earlier "no slowing" was the 1 s sampling.
+- **Wheel, 3 s apart (step 5):** +-1.13 m/s per notch, exactly additive. Wheel **up** moves the camera backward (`fwd` 0 to -9.05 in 8 turns), wheel **down** forward, whatever the camera orientation. It crosses zero (-9.05 back to 0.00 in 8 turns). So the wheel steps the signed speed, down = +1.13, up = -1.13.
+- **Plan for the app:** coarse steps with the keys (x1.1, forward only), then fine steps with the wheel, signed, until `camv model=` is within about 1 m/s of `along=`. Wait about 3 s after each step.
 - **Not tested yet:** helicopters, missiles, 2x replay, and the `kcam`/`kwheel` runs with 3 s gaps.
 
 ### Round 8: what is left (steps 1, 6 done; 8 postponed)
