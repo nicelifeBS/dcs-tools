@@ -57,7 +57,7 @@ def test_plan_from_rest() -> None:
 def test_plan_goes_backward_with_the_wheel_only() -> None:
     assert plan(-40, -10) == Action("wheel", -27)
     assert plan(-40, 3) == Action("wheel", -38)
-    assert plan(-40, 60) == Action("slower", 12)  # keys first, as far as they go
+    assert plan(-40, 60) == Action("slower", camera.MAX_KEYS)  # keys first, as far as they go
     assert plan(30, -100) == Action("wheel", camera.MAX_NOTCHES)  # then forward again
 
 

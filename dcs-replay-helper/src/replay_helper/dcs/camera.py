@@ -37,16 +37,16 @@ KEY_FACTOR = 1.1  # per press
 KEY_FIRST = 5.0  # m/s the first key press gives from rest
 WHEEL_STEP = 1.13  # m/s per notch
 KEY_MIN_ERR = 3.0  # below this error the wheel is finer than the keys
-MAX_KEYS = 12  # presses per round
+MAX_KEYS = 20  # presses per round
 MAX_NOTCHES = 40  # notches per round
 LEAVE_BACKWARD_TO = 4.0  # flying backward and needing forward: wheel up to about this, then keys
 SLOW_ENOUGH = 8.0  # needing zero or backward while flying forward faster than this: keys slow it first
 
 SLOW_SPEED = 1 / 16  # the replay speed used while matching from a pause (inputs are ignored paused)
-SETTLE_MIN_S = 1.5  # after an input, wait at least this long (a speed change ramps in)
+SETTLE_MIN_S = 1.0  # after an input, wait at least this long (a speed change ramps in)
 SETTLE_MAX_S = 6.0  # ... and no longer than this for it to stop changing
 SETTLED_DELTA = 0.3  # m/s: cam= changing less than this between STATEs counts as steady
-SETTLED_FOR_S = 0.5
+SETTLED_FOR_S = 0.4
 CONFIRMS = 2  # evaluations in a row within tolerance before it counts as matched
 MAX_ROUNDS = 30
 RESUME_GRACE_S = 1.5  # after RESUME, STATE may say paused for a moment
@@ -148,9 +148,9 @@ class WindowsCameraInput:
     """
 
     blocking = True
-    KEY_GAP_S = 0.12  # between presses
-    WHEEL_GAP_S = 0.08  # between notches
-    HOLD_S = 0.05  # between the events of one press
+    KEY_GAP_S = 0.05  # between presses
+    WHEEL_GAP_S = 0.04  # between notches
+    HOLD_S = 0.04  # between the events of one press
 
     def __init__(self) -> None:
         self._keys = WindowsKeyBackend()  # raises KeyPressError off Windows
