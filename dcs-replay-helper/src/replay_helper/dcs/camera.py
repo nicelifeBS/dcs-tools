@@ -49,6 +49,8 @@ SETTLED_DELTA = 0.3  # m/s: cam= changing less than this between STATEs counts a
 SETTLED_FOR_S = 0.4
 CONFIRMS = 2  # evaluations in a row within tolerance before it counts as matched
 MAX_ROUNDS = 30
+MULTI_CHECK_MIN = 5  # a wheel-only round of at least this many notches tests multi-notch events
+MULTI_CHECK_RATIO = 0.5
 RESUME_GRACE_S = 1.5  # after RESUME, STATE may say paused for a moment
 NO_DATA_S = 6.0  # give up waiting for the camera or the object speed after this long
 
@@ -129,6 +131,8 @@ def plan_burst(target: float, current: float, max_keys: int = MAX_KEYS) -> list[
 class CameraInput(Protocol):
     blocking: bool  # True if the calls take long enough to need a worker thread
 
+    multi_notch: bool  # a turn of n notches is one wheel event; False: n events
+
     def faster(self, presses: int) -> None: ...
     def slower(self, presses: int) -> None: ...
     def wheel(self, notches: int) -> None: ...  # positive: the camera's speed goes forward
@@ -138,6 +142,7 @@ class LinkCameraInput:
     """For tools/fake_dcs.py: the inputs are commands on the link."""
 
     blocking = False
+    multi_notch = False
 
     def __init__(self, send: Callable[[str], None]) -> None:
         self._send = send
@@ -177,6 +182,7 @@ class WindowsCameraInput:
     """
 
     blocking = True
+    multi_notch = True  # one wheel event for all the notches; the matcher turns it off if DCS counts fewer
     KEY_GAP_S = 0.02  # between presses
     WHEEL_GAP_S = 0.03  # between notches
     HOLD_S = 0.03  # a key held down: long enough for DCS to see it on a frame
@@ -228,9 +234,12 @@ class WindowsCameraInput:
         try:
             # Forward is wheel down, backward is wheel up.
             step = -1 if notches > 0 else 1
-            for _ in range(abs(notches)):
-                self._send(INPUT_MOUSE, mi=MOUSEINPUT(0, 0, wheel_data(step), MOUSEEVENTF_WHEEL, 0, 0))
-                time.sleep(self.WHEEL_GAP_S)
+            if self.multi_notch:
+                self._send(INPUT_MOUSE, mi=MOUSEINPUT(0, 0, wheel_data(step * abs(notches)), MOUSEEVENTF_WHEEL, 0, 0))
+            else:
+                for _ in range(abs(notches)):
+                    self._send(INPUT_MOUSE, mi=MOUSEINPUT(0, 0, wheel_data(step), MOUSEEVENTF_WHEEL, 0, 0))
+                    time.sleep(self.WHEEL_GAP_S)
         finally:
             u.SetCursorPos(old.x, old.y)
 
@@ -242,13 +251,23 @@ class AutoCameraInput:
         self._link = link
         self._fake = LinkCameraInput(link.send)
         self._windows: WindowsCameraInput | None = None
+        self._multi_notch = True
 
     def _backend(self) -> CameraInput:
         if (self._link.hook_version or "").startswith("fake"):
             return self._fake
         if self._windows is None:
             self._windows = WindowsCameraInput()
+        self._windows.multi_notch = self._multi_notch
         return self._windows
+
+    @property
+    def multi_notch(self) -> bool:
+        return self._multi_notch
+
+    @multi_notch.setter
+    def multi_notch(self, value: bool) -> None:
+        self._multi_notch = value
 
     @property
     def blocking(self) -> bool:
@@ -299,6 +318,7 @@ class CameraMatcher(QObject):
         self._ok = 0
         self._rounds = 0
         self._last_watch = 0.0
+        self._wheel_check: tuple[float, float] | None = None  # (camera before, predicted change)
         self._paused_ok_until = 0.0  # STATE still says paused for a moment after RESUME
 
         link.stateChanged.connect(self._on_state)
@@ -391,6 +411,7 @@ class CameraMatcher(QObject):
         if now < self._settle_until or not (steady or now >= self._settle_until + SETTLE_MAX_S - SETTLE_MIN_S):
             return
 
+        self._check_multi_notch(s.cam)
         actions = plan_burst(s.tgt_along, s.cam, self.max_keys)
         if not actions:
             self._ok += 1
@@ -405,6 +426,10 @@ class CameraMatcher(QObject):
                               f"object {s.tgt_along:.1f} m/s")
             return
         self._rounds += 1
+        self._wheel_check = None
+        if (all(a.kind == "wheel" for a in actions) and abs(actions[0].count) >= MULTI_CHECK_MIN
+                and getattr(self._backend, "multi_notch", False)):
+            self._wheel_check = (s.cam, actions[0].count * WHEEL_STEP)
         self.progress.emit(f"camera {s.cam:.1f} m/s, {self._label} {s.tgt_along:.1f} m/s: "
                            + ", ".join(a.describe() for a in actions))
         self._phase = "sending"
@@ -414,6 +439,18 @@ class CameraMatcher(QObject):
             self._executor.submit(self._run_input, actions)
         else:
             self._run_input(actions)
+
+    def _check_multi_notch(self, cam: float) -> None:
+        """A turn of many notches sent as one wheel event may be counted as fewer by DCS. If the
+        camera moved by less than half of what it should have, send one event per notch from now on."""
+        check, self._wheel_check = self._wheel_check, None
+        if check is None:
+            return
+        before, expected = check
+        if abs(cam - before) < abs(expected) * MULTI_CHECK_RATIO:
+            self._backend.multi_notch = False
+            self.progress.emit(f"the wheel moved the camera {cam - before:+.1f} m/s, expected {expected:+.1f}: "
+                               "sending one wheel event per notch from now on")
 
     def _run_input(self, actions: list[Action]) -> None:
         try:

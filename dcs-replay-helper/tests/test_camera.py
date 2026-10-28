@@ -160,14 +160,18 @@ class FakeSpeed(QObject):
 class SimInput:
     blocking = False
 
-    def __init__(self, link: FakeLink, ignore: int = 0, error: str | None = None) -> None:
+    def __init__(self, link: FakeLink, ignore: int = 0, error: str | None = None, multi_counts: bool = True) -> None:
         self.link, self.ignore, self.error = link, ignore, error
+        self.multi_notch = True  # the matcher turns this off
+        self.multi_counts = multi_counts  # False: DCS counts a multi-notch event as one notch
         self.actions: list[Action] = []
 
     def _do(self, action: Action) -> None:
         if self.error:
             raise RuntimeError(self.error)
         self.actions.append(action)
+        if action.kind == "wheel" and self.multi_notch and not self.multi_counts and abs(action.count) > 1:
+            action = Action("wheel", 1 if action.count > 0 else -1)
         if self.link.state.paused:
             return  # DCS ignores the inputs while the replay is paused
         if self.ignore > 0:
@@ -363,3 +367,22 @@ def test_a_new_start_cancels_the_old(rig) -> None:
     matcher.start(2)
     assert outcome(events) == ["failed"] and events[0][1] == "cancelled"
     assert link.watched == 2
+
+
+def test_multi_notch_wheel_is_dropped_when_dcs_counts_it_as_one(rig) -> None:
+    link, speed, inp, matcher, events, drive = rig(multi_counts=False)
+    link.target = -150.0
+    matcher.start(1, "Viper")
+    drive()
+    assert outcome(events) == ["matched"]
+    assert inp.multi_notch is False
+    assert any("one wheel event per notch" in m for kind, m in events if kind == "progress")
+    assert abs(link.state.cam + 150.0) <= camera.TOLERANCE
+
+
+def test_multi_notch_wheel_stays_when_it_works(rig) -> None:
+    link, speed, inp, matcher, events, drive = rig()
+    link.target = -150.0
+    matcher.start(1, "Viper")
+    drive()
+    assert outcome(events) == ["matched"] and inp.multi_notch is True
