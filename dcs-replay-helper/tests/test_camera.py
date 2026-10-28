@@ -10,7 +10,7 @@ pytest.importorskip("PySide6.QtCore")
 from PySide6.QtCore import QObject, Signal  # noqa: E402
 
 from replay_helper.dcs import camera  # noqa: E402
-from replay_helper.dcs.camera import Action, CameraMatcher, plan  # noqa: E402
+from replay_helper.dcs.camera import Action, CameraMatcher, plan, plan_burst  # noqa: E402
 from replay_helper.dcs.protocol import State  # noqa: E402
 
 
@@ -50,7 +50,8 @@ def test_plan_picks_the_coarse_input_first_and_the_fine_one_last() -> None:
 
 
 def test_plan_from_rest() -> None:
-    assert plan(200, 0) == Action("faster", 1)  # the first press gives 5 m/s
+    assert plan(200, 0) == Action("faster", 40)  # 5 m/s, then x1.1 for each further press
+    assert plan(200, 0, max_keys=20) == Action("faster", 20)
     assert plan(4, 0) == Action("wheel", 4)  # too small for a key press
 
 
@@ -58,7 +59,7 @@ def test_plan_goes_backward_with_the_wheel_only() -> None:
     assert plan(-40, -10) == Action("wheel", -27)
     assert plan(-40, 3) == Action("wheel", -38)
     assert plan(-40, 60) == Action("slower", 28)  # keys first, as far as they go
-    assert plan(30, -100) == Action("wheel", camera.MAX_NOTCHES)  # then forward again
+    assert plan(30, -100) == Action("wheel", 92)  # up to just above zero, then keys
 
 
 def test_plan_limits_a_round() -> None:
@@ -66,6 +67,29 @@ def test_plan_limits_a_round() -> None:
     assert plan(10000, 50, max_keys=8) == Action("faster", 8)
     assert plan(-40, 60, max_keys=5) == Action("slower", 5)
     assert plan(-1000, -5).count == -camera.MAX_NOTCHES
+
+
+def test_burst_sends_keys_then_the_wheel_in_one_go() -> None:
+    burst = plan_burst(125.0, 0.0, max_keys=60)
+    assert [a.kind for a in burst] == ["faster", "wheel"]
+    assert abs(sum_up(burst, 0.0) - 125.0) <= camera.TOLERANCE
+    assert plan_burst(100, 100.4) == []
+
+
+@pytest.mark.parametrize("start,target", [(0.0, 125.0), (0.0, 200.0), (232.0, 58.6), (-30.0, 90.0), (60.0, -40.0),
+                                          (0.0, -150.0), (120.0, 124.0)])
+def test_burst_gets_there_in_at_most_two_rounds(start, target) -> None:
+    cam = start
+    for _ in range(2):
+        for a in plan_burst(target, cam, max_keys=60):
+            cam = apply(cam, a)
+    assert abs(cam - target) <= camera.TOLERANCE
+
+
+def sum_up(burst, cam: float) -> float:
+    for a in burst:
+        cam = apply(cam, a)
+    return cam
 
 
 # --- Windows input ---------------------------------------------------------------------------
@@ -290,7 +314,7 @@ def test_dcs_ignoring_the_inputs_gives_up(rig) -> None:
     matcher.start(1)
     drive(600)
     assert outcome(events) == ["failed"] and "gave up" in events[-1][1]
-    assert len(inp.actions) == camera.MAX_ROUNDS
+    assert len({id(a) for a in inp.actions}) and len(inp.actions) >= camera.MAX_ROUNDS
 
 
 def test_a_dropped_input_is_repeated(rig) -> None:

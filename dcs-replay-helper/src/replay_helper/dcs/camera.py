@@ -37,13 +37,13 @@ KEY_FACTOR = 1.1  # per press
 KEY_FIRST = 5.0  # m/s the first key press gives from rest
 WHEEL_STEP = 1.13  # m/s per notch
 KEY_MIN_ERR = 3.0  # below this error the wheel is finer than the keys
-MAX_KEYS = 30  # presses per round (the default; the UI sets it)
-MAX_NOTCHES = 40  # notches per round
+MAX_KEYS = 50  # presses per round (the default; the UI sets it)
+MAX_NOTCHES = 100  # notches per round
 LEAVE_BACKWARD_TO = 4.0  # flying backward and needing forward: wheel up to about this, then keys
 SLOW_ENOUGH = 8.0  # needing zero or backward while flying forward faster than this: keys slow it first
 
 SLOW_SPEED = 1 / 16  # the replay speed used while matching from a pause (inputs are ignored paused)
-SETTLE_MIN_S = 1.0  # after an input, wait at least this long (a speed change ramps in)
+SETTLE_MIN_S = 0.3  # after an input, wait at least this long (a speed change ramps in)
 SETTLE_MAX_S = 6.0  # ... and no longer than this for it to stop changing
 SETTLED_DELTA = 0.3  # m/s: cam= changing less than this between STATEs counts as steady
 SETTLED_FOR_S = 0.4
@@ -77,7 +77,9 @@ def plan(target: float, current: float, max_keys: int = MAX_KEYS) -> Action | No
     if target > 0 and current >= 0:
         if current < KEY_FIRST / 2:
             if target >= KEY_FIRST * 1.4:
-                return Action("faster", 1)  # from rest the first press gives 5 m/s
+                # from rest the first press gives 5 m/s, each further one x1.1
+                n = 1 + max(0, _keys_for_ratio(target, KEY_FIRST))
+                return Action("faster", min(n, max_keys))
         elif abs(err) > KEY_MIN_ERR:
             n = _keys_for_ratio(target, current)
             if n:
@@ -92,6 +94,33 @@ def plan(target: float, current: float, max_keys: int = MAX_KEYS) -> Action | No
     if notches == 0:
         notches = 1 if err > 0 else -1
     return Action("wheel", notches)
+
+
+def predict(current: float, action: Action) -> float:
+    """What the camera speed becomes with `action`, by the rules measured in DCS."""
+    if action.kind == "faster":
+        for _ in range(action.count):
+            current = KEY_FIRST if current < 0.5 else current * KEY_FACTOR
+    elif action.kind == "slower":
+        for _ in range(action.count):
+            current = current / KEY_FACTOR if current > 0 else current
+    else:
+        current += action.count * WHEEL_STEP
+    return current
+
+
+def plan_burst(target: float, current: float, max_keys: int = MAX_KEYS) -> list[Action]:
+    """Everything to send in one go: keys for the bulk, then the wheel for the rest, as far as the
+    rules predict it (a second round checks it). The keys and the wheel both change the speed DCS
+    is heading for, so they need no waiting in between."""
+    acts: list[Action] = []
+    for _ in range(3):
+        a = plan(target, current, max_keys)
+        if a is None or (acts and a.kind == acts[-1].kind):
+            break
+        acts.append(a)
+        current = predict(current, a)
+    return acts
 
 
 # --------------------------------------------------------------------------------------
@@ -148,9 +177,9 @@ class WindowsCameraInput:
     """
 
     blocking = True
-    KEY_GAP_S = 0.05  # between presses
-    WHEEL_GAP_S = 0.04  # between notches
-    HOLD_S = 0.04  # between the events of one press
+    KEY_GAP_S = 0.02  # between presses
+    WHEEL_GAP_S = 0.03  # between notches
+    HOLD_S = 0.03  # a key held down: long enough for DCS to see it on a frame
 
     def __init__(self) -> None:
         self._keys = WindowsKeyBackend()  # raises KeyPressError off Windows
@@ -161,17 +190,25 @@ class WindowsCameraInput:
         if self._user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
             raise KeyPressError(f"SendInput failed (error {ctypes.get_last_error()})")
 
-    def _press(self, faster: bool) -> None:
-        for scan, key_up, extended in camera_key_events(faster):
-            flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0) | (KEYEVENTF_EXTENDEDKEY if extended else 0)
-            self._send(INPUT_KEYBOARD, ki=KEYBDINPUT(0, scan, flags, 0, 0))
-            time.sleep(self.HOLD_S)
+    def _event(self, scan: int, key_up: bool, extended: bool) -> None:
+        flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if key_up else 0) | (KEYEVENTF_EXTENDEDKEY if extended else 0)
+        self._send(INPUT_KEYBOARD, ki=KEYBDINPUT(0, scan, flags, 0, 0))
 
     def _keys_run(self, faster: bool, presses: int) -> None:
+        """LAlt is held down once and the key tapped `presses` times."""
         self._keys.focus_dcs()
-        for _ in range(presses):
-            self._press(faster)
-            time.sleep(self.KEY_GAP_S)
+        events = camera_key_events(faster)
+        (alt_down, key_down, key_up, alt_up) = events
+        self._event(*alt_down)
+        time.sleep(self.HOLD_S)
+        try:
+            for _ in range(presses):
+                self._event(*key_down)
+                time.sleep(self.HOLD_S)
+                self._event(*key_up)
+                time.sleep(self.KEY_GAP_S)
+        finally:
+            self._event(*alt_up)
 
     def faster(self, presses: int) -> None:
         self._keys_run(True, presses)
@@ -354,8 +391,8 @@ class CameraMatcher(QObject):
         if now < self._settle_until or not (steady or now >= self._settle_until + SETTLE_MAX_S - SETTLE_MIN_S):
             return
 
-        action = plan(s.tgt_along, s.cam, self.max_keys)
-        if action is None:
+        actions = plan_burst(s.tgt_along, s.cam, self.max_keys)
+        if not actions:
             self._ok += 1
             if self._ok >= CONFIRMS:
                 self._finish_ok(s)
@@ -368,23 +405,25 @@ class CameraMatcher(QObject):
                               f"object {s.tgt_along:.1f} m/s")
             return
         self._rounds += 1
-        self.progress.emit(f"camera {s.cam:.1f} m/s, {self._label} {s.tgt_along:.1f} m/s: {action.describe()}")
+        self.progress.emit(f"camera {s.cam:.1f} m/s, {self._label} {s.tgt_along:.1f} m/s: "
+                           + ", ".join(a.describe() for a in actions))
         self._phase = "sending"
         if self._backend.blocking:
             if self._executor is None:
                 self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dcs-camera")
-            self._executor.submit(self._run_input, action)
+            self._executor.submit(self._run_input, actions)
         else:
-            self._run_input(action)
+            self._run_input(actions)
 
-    def _run_input(self, action: Action) -> None:
+    def _run_input(self, actions: list[Action]) -> None:
         try:
-            if action.kind == "faster":
-                self._backend.faster(action.count)
-            elif action.kind == "slower":
-                self._backend.slower(action.count)
-            else:
-                self._backend.wheel(action.count)
+            for action in actions:
+                if action.kind == "faster":
+                    self._backend.faster(action.count)
+                elif action.kind == "slower":
+                    self._backend.slower(action.count)
+                else:
+                    self._backend.wheel(action.count)
             error = None
         except Exception as exc:  # delivered to the UI thread
             error = str(exc) or type(exc).__name__

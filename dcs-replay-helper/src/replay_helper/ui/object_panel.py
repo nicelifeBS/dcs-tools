@@ -30,7 +30,7 @@ KIND_NAMES = {"plane": "Aircraft", "heli": "Helicopter", "weapon": "Missile", "a
 COLUMNS = ("Type", "Pilot / unit", "Group", "Speed", "Along the view", "Distance")
 KIND_FILTERS = (("plane", "Aircraft"), ("heli", "Helicopters"), ("weapon", "Missiles"))
 DEFAULT_RADIUS_KM = 20
-DEFAULT_KEYS = 30
+DEFAULT_KEYS = 50
 COALITION_COLORS = {"blue": "#1565c0", "red": "#c62828"}
 ERROR_STYLE = "color: #c62828;"
 
@@ -120,7 +120,7 @@ class ObjectPanel(QWidget):
             "motion meanwhile and is paused again after.")
         self.match_button.clicked.connect(self._match)
         self.keys_spin = QSpinBox()
-        self.keys_spin.setRange(1, 60)
+        self.keys_spin.setRange(1, 100)
         self.keys_spin.setValue(DEFAULT_KEYS)
         self.keys_spin.setToolTip("Key presses (LAlt+Num* / Num/) sent at once in each round. More is faster, "
                                   "but if DCS misses presses, lower it.")

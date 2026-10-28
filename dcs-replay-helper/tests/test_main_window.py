@@ -370,6 +370,6 @@ def test_match_camera_speed_from_a_pause(qapp, app_rig) -> None:
 
 def test_key_presses_per_round_is_a_setting(qapp, app_rig) -> None:
     sim, link, window = app_rig()
-    assert window.camera.max_keys == 30 and window.objects.keys_spin.value() == 30
+    assert window.camera.max_keys == 50 and window.objects.keys_spin.value() == 50
     window.objects.keys_spin.setValue(12)
     assert window.camera.max_keys == 12
