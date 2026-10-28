@@ -56,6 +56,7 @@ In the step tables, **DCS** = what you do in the game, **Tool** = what you type 
 - **Followed aircraft:** with the camera at 164 m/s the player's A-10C (`along=171`) stayed at 34 m, later 263 m. The speed is close enough to follow, but needs a fine step (the wheel) to avoid drifting.
 - **Keys, 3 s apart (steps 3, 4):** `Num*` gives 5.0, 5.5, 6.1, 6.7, 7.4, 8.0, 8.9, 9.7 m/s: x1.1 per press. `Num/` gives 8.9, 8.0, 7.3, 6.7, 6.1, 5.5, 5.0, 4.6: / 1.1 per press. No floor in range, and the keys never cross zero. The earlier "no slowing" was the 1 s sampling.
 - **Wheel, 3 s apart (step 5):** +-1.13 m/s per notch, exactly additive. Wheel **up** moves the camera backward (`fwd` 0 to -9.05 in 8 turns), wheel **down** forward, whatever the camera orientation. It crosses zero (-9.05 back to 0.00 in 8 turns). So the wheel steps the signed speed, down = +1.13, up = -1.13.
+- **Reload:** the DCS log shows the track was reloaded between the keys and the wheel run (`simulation stopped`, `mission loaded`). The camera speed started again at 0.00: it is not kept across a reload. The second `Num/` run (20:53) logged no presses for that reason.
 - **Plan for the app:** coarse steps with the keys (x1.1, forward only), then fine steps with the wheel, signed, until `camv model=` is within about 1 m/s of `along=`. Wait about 3 s after each step.
 - **Not tested yet:** helicopters, missiles, 2x replay, and the `kcam`/`kwheel` runs with 3 s gaps.
 
